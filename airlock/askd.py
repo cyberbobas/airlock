@@ -38,10 +38,29 @@ def _handle(conn: socket.socket, auto: str | None):
             d = _via_zenity(req, TIMEOUT)
             decision = d if d in (ALLOW, BLOCK) else BLOCK
             via = "zenity" if d in (ALLOW, BLOCK) else "zenity-timeout->block"
-        audit.record("ask_prompt", source="askd", server=req.get("server", ""),
-                     tool=req.get("tool", ""), decision="ask", effective=decision,
-                     reason=f"{req.get('reason','')} [{via}]")
-        conn.sendall((json.dumps({"decision": decision, "via": via}) + "\n").encode())
+        # Send first, then record what actually happened. Recording first meant
+        # a human who answered after the caller had given up left "ask_prompt
+        # effective=allow" in the log next to "decision effective=block" for
+        # the same call — and the approval came second, so an auditor reading
+        # in order saw the refusal overturned by an approval that was never
+        # applied to anything. A log that records an approval for a call that
+        # did not run is worse than no record: it invites the conclusion that
+        # the action was authorised and happened.
+        delivered = True
+        try:
+            conn.sendall((json.dumps({"decision": decision, "via": via}) + "\n").encode())
+        except OSError:
+            delivered = False
+        if delivered:
+            audit.record("ask_prompt", source="askd", server=req.get("server", ""),
+                         tool=req.get("tool", ""), decision="ask", effective=decision,
+                         reason=f"{req.get('reason','')} [{via}]")
+        else:
+            audit.record("ask_prompt", source="askd", server=req.get("server", ""),
+                         tool=req.get("tool", ""), decision="ask", effective="flag",
+                         reason=f"{req.get('reason','')} [{via}: answered "
+                                f"'{decision}' too late — the caller had already "
+                                f"given up, so this answer decided nothing]")
     except Exception as e:  # never crash the daemon on a bad request
         try:
             conn.sendall((json.dumps({"decision": BLOCK, "error": str(e)}) + "\n").encode())

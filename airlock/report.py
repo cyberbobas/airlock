@@ -45,6 +45,7 @@ class Report:
     ask_to_agent: int = 0      # handed to the agent's own approval prompt (hook)
     ask_answered: int = 0      # a human answered a dialog (proxy + ask channel)
     ask_unattended: int = 0    # nobody was there; resolved by the mode
+    ask_too_late: int = 0      # a human answered, after the call had been decided
     ask_to_block: int = 0      # an ask that the scanner or a contract escalated
     ask_to_allow: int = 0      # an ask the mode resolved without anyone present
     scan_flags: Counter = field(default_factory=Counter)
@@ -65,6 +66,7 @@ class Report:
             "human": {"asked": self.asked, "to_agent_prompt": self.ask_to_agent,
                   "answered_by_you": self.ask_answered,
                   "unattended": self.ask_unattended,
+                  "answered_too_late": self.ask_too_late,
                   "escalated_to_block": self.ask_to_block,
                   "allowed_unattended": self.ask_to_allow},
             "scan_flags": self.scan_flags.most_common(),
@@ -114,6 +116,10 @@ def build(days: int = 7, path: Path | None = None) -> Report:
             seen_days.add(rec["ts"][:10])
 
         ev = rec.get("event")
+        if ev == "ask_prompt" and "too late" in (rec.get("reason") or ""):
+            # Worth surfacing on its own: it means the operator does answer,
+            # and the timeout is shorter than the way they actually work.
+            r.ask_too_late += 1
         if ev == "decision":
             r.total += 1
             eff = rec.get("effective") or "?"
@@ -253,6 +259,10 @@ def render(r: Report, *, color: bool = True) -> str:
             parts.append(f"{r.ask_to_agent} via your agent's own prompt")
         if r.ask_answered:
             parts.append(f"{r.ask_answered} you answered directly")
+        if r.ask_too_late:
+            o.append(f"    {c['m']}·{c['0']} {r.ask_too_late} answer(s) arrived after the "
+                     f"call had already been decided — raise AIRLOCK_ASK_TIMEOUT "
+                     f"if you want them to count")
         if r.ask_unattended:
             how = ("allowed" if r.ask_to_allow >= r.ask_to_block else "refused")
             parts.append(f"{r.ask_unattended} resolved unattended ({how})")

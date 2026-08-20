@@ -60,6 +60,7 @@ def _via_socket(req: dict, timeout: float) -> str | None:
     p = sock_path()
     if not p.exists():
         return None
+    s = None
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(timeout)
@@ -71,12 +72,17 @@ def _via_socket(req: dict, timeout: float) -> str | None:
             if not chunk:
                 break
             buf += chunk
-        s.close()
         reply = json.loads(buf.decode().strip() or "{}")
         d = reply.get("decision")
         return d if d in (ALLOW, BLOCK) else None
     except Exception:
         return None
+    finally:
+        if s is not None:
+            try:
+                s.close()
+            except OSError:
+                pass
 
 
 def _via_osascript(req: dict, timeout: float) -> str | None:
