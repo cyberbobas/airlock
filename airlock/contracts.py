@@ -150,7 +150,11 @@ def classify_all(tool: str, args: dict) -> list[tuple[str, str]]:
         if host:
             add("net", host.lower())
         elif _looks_like_path(s):
-            add("fs", os.path.normpath(os.path.expanduser(s)))
+            # Fold the spelling BEFORE collapsing `..`: normpath does nothing
+            # for `%2e%2e`, so a percent-encoded traversal stayed inside a
+            # contract scope that the plain `../` form escaped.
+            from .policy import normalize
+            add("fs", os.path.normpath(os.path.expanduser(normalize(s))))
     return out
 
 
@@ -197,7 +201,14 @@ class Contract:
 
 
 def _in_scope(value: str, globs: list) -> bool:
-    v = value.lower()
+    """Scope check on the same normalised form the global rules use.
+
+    Without it `/srv/notes/%2e%2e/%2e%2e/etc/passwd` counted as inside a
+    contract scoped to `/srv/notes/*` — the plain `../` form was caught and the
+    percent-encoded one was not, which is the worse half to miss.
+    """
+    from .policy import normalize
+    v = normalize(value)          # idempotent; classify_all already folded fs paths
     return any(_glob(v, str(g).lower()) for g in globs)
 
 

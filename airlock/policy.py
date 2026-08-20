@@ -206,6 +206,10 @@ class Policy:
         for i, g in enumerate(self.grants or []):
             if not isinstance(g, dict) or not g.get("tool"):
                 raise ValueError(f"policy: grant #{i} needs at least a `tool`")
+            exp = g.get("expires")
+            if exp is not None and not _DATE.match(str(exp)):
+                raise ValueError(f"policy: grant #{i} has expires={exp!r} — "
+                                 f"write YYYY-MM-DD, or leave it out")
 
     # ---- decision ------------------------------------------------------
     def decide(self, tool: str, args: dict | None) -> Decision:
@@ -267,8 +271,8 @@ class Policy:
             if m is not None and not _glob(text, str(m).lower()):
                 continue
             exp = str(g.get("expires", "") or "")
-            if exp and exp < today:
-                continue          # a stale grant is not a grant
+            if exp and not _expiry_ok(exp, today):
+                continue          # stale, or unreadable — either way, not a grant
             who = g.get("reason") or "granted by you"
             return Decision(ALLOW, f"grant: {who}", -(i + 1))
         return None
@@ -327,6 +331,28 @@ class Policy:
 
 
 # ---- helpers -----------------------------------------------------------
+_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _expiry_ok(exp: str, today: str) -> bool:
+    """Is this grant still live?
+
+    A grant is a loosening, so an expiry nobody can read has to fail towards
+    refusing it. `expires: not-a-date` and `expires: 9999-99-99` both sorted
+    later than today's string and therefore meant "never expires" — the exact
+    inversion of what someone typing a malformed date intends.
+    """
+    if not _DATE.match(exp):
+        return False
+    try:
+        y, m, d = (int(x) for x in exp.split("-"))
+        if not (1 <= m <= 12 and 1 <= d <= 31):
+            return False
+    except ValueError:
+        return False
+    return exp >= today
+
+
 def _stricter(a: str, b: str) -> str:
     return a if RANK.get(a, 1) >= RANK.get(b, 1) else b
 

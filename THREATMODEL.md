@@ -83,6 +83,8 @@ that fires rarely, so nothing ever ran it.
 | Syslog reused the CEF escaper | RFC5424 requires `"`, `\` and `]` escaped and defines no `\=`; a path containing `"] [airlock@0 effective="allow"` closed the structured-data element and opened a second one the payload controlled | separate escapers, one per format, each matching its own spec |
 | One spelling of a secret path was matched, not the others | `~/%2essh/config` and a fullwidth `~/．ssh/config` walked past `*/.ssh/*` while naming that directory to anything that decodes a URI | the rendered string is NFKC-folded and percent-decoded twice before matching |
 | Credential coverage stopped at ssh and aws | gcloud ADC, the GitHub CLI token, in-cluster service-account tokens, PyPI/crates.io/RubyGems/Terraform credentials, keyrings, browser cookie and password stores and shell history were all readable | all added, with a corpus asserting ordinary files with similar names still pass |
+| A contract's fs scope was checked on the raw path | `normpath` does nothing for `%2e%2e`, so a percent-encoded traversal stayed "inside" a scope the plain `../` form escaped | the path is folded before `..` is collapsed |
+| An unreadable grant expiry meant "never expires" | `expires: not-a-date` and `9999-99-99` both sorted later than today's string, so a malformed date granted forever — the inversion of what it means | expiries must be YYYY-MM-DD and are rejected at load; an unreadable one does not grant |
 
 What deep testing confirmed rather than broke: 480 concurrent audit records with
 no loss or tearing, 20 concurrent pins with exactly one `new`, an audit chain

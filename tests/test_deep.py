@@ -296,6 +296,58 @@ for i in range(40):
         s.check(f"{label} is off-limits",
                 pol.decide("Read", {"file_path": path}).action == "block", path)
 
+    # === 12. contract scope is checked on the folded path =================
+    # Was: normpath does nothing for `%2e%2e`, so a percent-encoded traversal
+    # stayed "inside" a contract scoped to /srv/notes/* while the plain ../
+    # form was caught — the worse half to miss.
+    ch = pathlib.Path(tempfile.mkdtemp(prefix="airlock-ct-"))
+    (ch / "contracts.yaml").write_text(
+        'demo:\n  enforced: true\n  tools: [read_note]\n  fs: ["/srv/notes/*"]\n'
+        '  net: []\n  shell: false\n  default: block\n')
+    old_home = _os.environ.get("AIRLOCK_HOME")
+    _os.environ["AIRLOCK_HOME"] = str(ch)
+    from airlock import contracts as _ct
+    importlib.reload(_ct)
+    c = _ct.get("demo")
+    s.check("a path in scope is allowed", c.check("read_note", {"name": "/srv/notes/a.md"})[0] == "allow")
+    for label, path in (("plain ../", "/srv/notes/../../etc/passwd"),
+                        ("percent-encoded", "/srv/notes/%2e%2e/%2e%2e/etc/passwd"),
+                        ("double-encoded", "/srv/notes/%252e%252e/etc/passwd"),
+                        ("absolute elsewhere", "/etc/passwd")):
+        act, why = c.check("read_note", {"name": path})
+        s.check(f"contract escape via {label} is blocked", act == "block", (path, why))
+    s.check("a tool outside the contract is blocked",
+            c.check("run_command", {"command": "ls"})[0] == "block")
+    if old_home is None:
+        _os.environ.pop("AIRLOCK_HOME", None)
+    else:
+        _os.environ["AIRLOCK_HOME"] = old_home
+    importlib.reload(_ct)
+
+    # === 13. an unreadable grant expiry must not mean "never expires" ======
+    # Was: string comparison, so `not-a-date` and `9999-99-99` both sorted
+    # later than today and granted forever — the inversion of what someone
+    # typing a malformed date intends. A grant is a loosening; it fails shut.
+    base = _P.load(str(_cfg.profile_path("default")))
+    for exp, want_allow in (("2999-01-01", True), ("2020-01-01", False),
+                            ("not-a-date", False), ("9999-99-99", False),
+                            ("2026-13-01", False), ("", True)):
+        g = {"tool": "Read", "match": "/srv/g/*", "reason": "t"}
+        if exp:
+            g["expires"] = exp
+        base.grants = [g]
+        got = base.decide("Read", {"file_path": "/srv/g/x"}).action == "allow"
+        s.check(f"grant with expires={exp!r} {'applies' if want_allow else 'does not apply'}",
+                got == want_allow, got)
+    try:
+        _P.load(str(_cfg.profile_path("default")))
+        bad = _P.load(str(_cfg.profile_path("default")))
+        bad.grants = [{"tool": "Read", "expires": "soon"}]
+        bad.validate()
+        s.check("a malformed expiry is rejected at load", False, "validate() accepted it")
+    except ValueError as e:
+        s.check("a malformed expiry is rejected at load", "expires" in str(e), str(e))
+
     return s.report()
 
 
