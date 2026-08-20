@@ -89,7 +89,7 @@ fleet is the normal case.
 | surface | covered | how |
 |---|---|---|
 | **Any MCP server, any agent** (stdio) | ✅ | `airlock-mcp` proxy — vendor-neutral, this is the broad one |
-| Claude Code native tools | ✅ | PreToolUse hook |
+| Claude Code native tools | ✅ | PreToolUse hook decides; PostToolUse records what ran |
 | Cursor / Windsurf / Cline / Codex native tools | ❌ | their MCP servers are gated; their *built-in* file and shell tools are not |
 | MCP over HTTP/SSE | ❌ | stdio only today |
 | A process opening its own socket | ❌ | needs an OS-level egress shim (plane ③) |

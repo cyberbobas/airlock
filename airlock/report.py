@@ -46,6 +46,8 @@ class Report:
     ask_answered: int = 0      # a human answered a dialog (proxy + ask channel)
     ask_unattended: int = 0    # nobody was there; resolved by the mode
     ask_too_late: int = 0      # a human answered, after the call had been decided
+    handed_ran: int = 0        # handed to the agent's own prompt, and it ran
+    handed_never_ran: int = 0  # handed over, and never ran: the human said no
     ask_to_block: int = 0      # an ask that the scanner or a contract escalated
     ask_to_allow: int = 0      # an ask the mode resolved without anyone present
     scan_flags: Counter = field(default_factory=Counter)
@@ -67,6 +69,8 @@ class Report:
                   "answered_by_you": self.ask_answered,
                   "unattended": self.ask_unattended,
                   "answered_too_late": self.ask_too_late,
+                  "handed_over_and_ran": self.handed_ran,
+                  "handed_over_and_did_not": self.handed_never_ran,
                   "escalated_to_block": self.ask_to_block,
                   "allowed_unattended": self.ask_to_allow},
             "scan_flags": self.scan_flags.most_common(),
@@ -99,6 +103,11 @@ def build(days: int = 7, path: Path | None = None) -> Report:
     per_server = defaultdict(lambda: Counter())
     first_ts = None
     seen_days = set()
+    # A PostToolUse record means the call ran. An `ask` handed to the agent's
+    # own prompt with no outcome after it is one the human said no to — which
+    # is the half of the story the log used to be missing entirely.
+    ran: set = set()
+    handed: list = []
     for line in p.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
@@ -116,6 +125,9 @@ def build(days: int = 7, path: Path | None = None) -> Report:
             seen_days.add(rec["ts"][:10])
 
         ev = rec.get("event")
+        if ev == "outcome":
+            ran.add((rec.get("session", ""), rec.get("tool", ""),
+                     rec.get("args_digest", "")))
         if ev == "ask_prompt" and "too late" in (rec.get("reason") or ""):
             # Worth surfacing on its own: it means the operator does answer,
             # and the timeout is shorter than the way they actually work.
@@ -136,6 +148,8 @@ def build(days: int = 7, path: Path | None = None) -> Report:
                 reason = rec.get("reason") or ""
                 if rec.get("source") == "hook" and eff == "ask":
                     r.ask_to_agent += 1
+                    handed.append((rec.get("session", ""), rec.get("tool", ""),
+                                   rec.get("args_digest", "")))
                 elif "[ask:fallback]" in reason:
                     r.ask_unattended += 1
                 elif "[ask:" in reason:
@@ -156,6 +170,12 @@ def build(days: int = 7, path: Path | None = None) -> Report:
         else r.until
     r.quiet_days = max(0, days - len(seen_days))
     r.servers = {k: dict(v) for k, v in sorted(per_server.items())}
+    for key in handed:
+        if key in ran:
+            r.handed_ran += 1
+        else:
+            r.handed_never_ran += 1
+
     r.chain_ok, _n, r.chain_msg = audit.verify(p)
 
     # over-privilege: granted vs actually used
@@ -259,6 +279,9 @@ def render(r: Report, *, color: bool = True) -> str:
             parts.append(f"{r.ask_to_agent} via your agent's own prompt")
         if r.ask_answered:
             parts.append(f"{r.ask_answered} you answered directly")
+        if r.handed_ran or r.handed_never_ran:
+            o.append(f"    {c['d']}of those handed to your own prompt: "
+                     f"{r.handed_ran} ran, {r.handed_never_ran} did not{c['0']}")
         if r.ask_too_late:
             o.append(f"    {c['m']}·{c['0']} {r.ask_too_late} answer(s) arrived after the "
                      f"call had already been decided — raise AIRLOCK_ASK_TIMEOUT "

@@ -43,6 +43,38 @@ def _deny(reason: str) -> int:
     return EXIT_BLOCK
 
 
+def _record_outcome(payload: dict) -> int:
+    """PostToolUse: say what became of a call the gate only asked about.
+
+    Airlock recorded `ask` and stopped. Claude Code then put its own prompt in
+    front of the human, and whatever they answered never came back here — so a
+    refused call and an approved one left an identical log. For exactly the
+    calls that were worth interrupting somebody over, the record held the
+    question and not the answer.
+
+    PostToolUse fires only when the tool actually ran, so its arrival IS the
+    answer. An `ask` with no outcome after it is one that never ran. This must
+    never block: the call has already happened.
+    """
+    tool = payload.get("tool_name") or "?"
+    args = payload.get("tool_input")
+    if not isinstance(args, dict):
+        args = {}
+    _kind, resource = contracts.classify(tool, args)
+    err = ""
+    resp = payload.get("tool_response")
+    if isinstance(resp, dict):
+        if resp.get("error"):
+            err = str(resp["error"])[:120]
+        elif resp.get("is_error") or resp.get("isError"):
+            err = "the tool reported an error"
+    audit.record("outcome", source="hook", tool=tool,
+                 effective="ran", reason=err or "the call ran",
+                 args=args, session=payload.get("session_id", ""),
+                 resource=resource)
+    return EXIT_ALLOW
+
+
 def main() -> int:
     raw = sys.stdin.read()
     try:
@@ -55,6 +87,13 @@ def main() -> int:
         if _flag("AIRLOCK_STRICT"):
             return _deny(f"unparseable hook payload ({e}) and AIRLOCK_STRICT=1")
         return EXIT_ALLOW
+
+    if ("--post" in sys.argv[1:]
+            or payload.get("hook_event_name") == "PostToolUse"):
+        try:
+            return _record_outcome(payload)
+        except Exception:
+            return EXIT_ALLOW      # never let bookkeeping fail a call that ran
 
     tool = payload.get("tool_name") or "?"
     args = payload.get("tool_input")

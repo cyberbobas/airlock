@@ -148,7 +148,7 @@ def target_policy(pol) -> Path:
         dst = config.user_policy()
         if not dst.exists():
             src = Path(pol.path)
-            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+            config.write_atomic(dst, src.read_text(encoding="utf-8"))
             os.chmod(dst, 0o600)
         return dst
     return Path(pol.path)
@@ -189,8 +189,8 @@ def revoke(pol, index: int) -> tuple[Path, str, bool]:
     g = grants.pop(index)
     data["grants"] = grants
     header = _leading_comments(path)
-    path.write_text(header + yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
-                    encoding="utf-8")
+    config.write_atomic(path, header + yaml.safe_dump(data, sort_keys=False,
+                                                      allow_unicode=True))
     return path, f"revoked {g.get('tool')}", True
 
 

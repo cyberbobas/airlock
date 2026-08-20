@@ -521,6 +521,10 @@ def cmd_update(a) -> int:
     return 0 if ok else 1
 
 
+_PASSTHROUGH = {"mcp": "airlock.mcp_proxy", "hook": "airlock.cc_hook",
+                "askd": "airlock.askd"}
+
+
 def _exec_module(mod: str, argv: list[str]) -> int:
     env = dict(os.environ, PYTHONPATH=f"{ROOT}{os.pathsep}" + os.environ.get("PYTHONPATH", ""))
     return subprocess.call([sys.executable, "-m", mod, *argv], env=env)
@@ -632,6 +636,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    # `airlock hook --post` and `airlock mcp -- server args` hand options
+    # through to the module they run. argparse rejects an unknown option
+    # before REMAINDER ever sees it, so the passthrough commands are split off
+    # before parsing: `init` writes `airlock hook --post` whenever the
+    # console script is not on PATH, and that form exited 2 on every single
+    # tool call instead of recording an outcome.
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in _PASSTHROUGH:
+        return _exec_module(_PASSTHROUGH[argv[0]], argv[1:])
     args = build_parser().parse_args(argv)
     if getattr(args, "cmd", "") in ("pins", "contracts") and \
             args.action not in ("list",) and not args.server_id:

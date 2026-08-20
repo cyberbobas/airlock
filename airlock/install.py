@@ -23,7 +23,10 @@ from pathlib import Path
 from . import config
 
 MARKER = "airlock"
-HOOK_EVENTS = ("PreToolUse",)
+# PreToolUse decides; PostToolUse records what became of the ones it only
+# asked about — without it a refused call and an approved one look the same
+# in the log, for precisely the calls worth interrupting a human over.
+HOOK_EVENTS = ("PreToolUse", "PostToolUse")
 
 
 @dataclass
@@ -170,7 +173,7 @@ def install_policy(profile: str, res: Result, force: bool = False) -> Path:
               f"{time.strftime('%Y-%m-%d')}.\n"
               f"# Yours to edit. `airlock allow` appends to `grants:` below.\n"
               f"# Re-copy a fresh profile any time: airlock profile {profile} --force\n")
-    dst.write_text(banner + text, encoding="utf-8")
+    config.write_atomic(dst, banner + text)
     os.chmod(dst, 0o600)
     res.add(dst, f"policy written from profile '{profile}'", b or "")
     return dst
@@ -182,9 +185,11 @@ def claude_settings() -> Path:
                                Path.home() / ".claude" / "settings.json"))
 
 
-def _hook_entry() -> dict:
-    return {"matcher": "*", "hooks": [{"type": "command",
-                                       "command": hook_command()}]}
+def _hook_entry(event: str = "PreToolUse") -> dict:
+    cmd = hook_command()
+    if event == "PostToolUse":
+        cmd += " --post"
+    return {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}
 
 
 def _is_airlock_hook(entry: dict) -> bool:
@@ -201,13 +206,13 @@ def install_hook(res: Result) -> None:
         if any(_is_airlock_hook(g) for g in groups):
             res.note(f"{event} hook already wired in {p}")
             continue
-        groups.append(_hook_entry())
+        groups.append(_hook_entry(event))
         changed = True
     if not changed:
         return
     b = _backup(p)
     _save_json(p, data)
-    res.add(p, f"PreToolUse hook -> {hook_command()}", b or "")
+    res.add(p, f"PreToolUse + PostToolUse hooks -> {hook_command()}", b or "")
 
 
 def remove_hook(res: Result) -> None:

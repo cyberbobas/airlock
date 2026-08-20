@@ -29,6 +29,28 @@ def home() -> Path:
     return d
 
 
+def write_atomic(path: Path, text: str) -> None:
+    """Replace a file's contents in one step, or not at all.
+
+    A plain write truncates first: for the length of one rewrite the policy on
+    disk is a prefix of itself. A prefix of a YAML rule list is still valid
+    YAML — 104 of the 118 line-boundary truncations of the shipped paranoid
+    profile parse as a policy, one of them with a single block rule left of
+    seventy-two — so a gate reading at that instant would enforce almost
+    nothing and log the result as an ordinary decision. The window is
+    microseconds and the consequence is total, which is the wrong trade to
+    leave in a security tool when os.replace() is atomic and free.
+
+    Writes through a symlink rather than replacing it, for the same reason
+    `airlock init` does.
+    """
+    target = Path(os.path.realpath(path)) if path.is_symlink() else Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, target)
+
+
 def workspace() -> Path:
     """The project the agent is operating on.
 
