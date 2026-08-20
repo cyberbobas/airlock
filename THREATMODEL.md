@@ -59,6 +59,8 @@ non-interactive uninstall. Each now has a regression in `tests/test_regressions.
 | `audit.jsonl` was 0644 while rotated segments were 0600 | the file holding the freshest paths, hosts and commands was the least protected one | the live file is chmod 0600 on creation |
 | Metadata SSRF only matched the dotted form | `http://2852039166/` is the same address; so are the hex, octal, v6-mapped and `nip.io` spellings | all six forms blocked, with a test that ordinary paths still are not |
 | `*fetch*` never matched `WebFetch` | fnmatch is case-sensitive on POSIX, so the shipped allow-list example silently never fired | tool patterns match case-insensitively, as the profiles always said |
+| `allow last` wrote grants that did nothing | the useless-grant check probed the folded glob, not the resource that was refused, so a blocked write to `~/.claude/settings.json` produced a `~/.claude/*` grant and a success message | the concrete resources are probed too; the grant is refused with the rule that blocks it |
+| CEF export named a hardcoded version | a SIEM record that misstates which build made the decision is evidence about nothing in particular | it reads the package version |
 | The report counted allowed asks as "escalated to a block" | it over-claimed protection, in the direction that flatters the product | escalation and unattended-allow are counted and printed separately |
 | Backups collided within one second | the copy that lost was the original — the only one `uninstall` needs | backup names are made unique before writing |
 

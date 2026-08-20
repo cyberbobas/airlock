@@ -430,7 +430,8 @@ def cmd_allow(a) -> int:
             g["match"] = a.match
         if a.expires:
             g["expires"] = a.expires
-        hard = grants.hard_blocked(pol, g)
+        hard = grants.hard_blocked(
+            pol, g, ev.get("_resources") or ([ev.get("resource")] if ev.get("resource") else []))
         if hard:
             print(f"\n  {_C['h']}refused{_C['0']}: an absolute block rule still "
                   f"applies — {hard}")

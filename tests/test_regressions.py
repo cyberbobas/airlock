@@ -504,6 +504,28 @@ def main():
     s.check("an un-listed host still is not allowed",
             pol.decide("WebFetch", {"url": "https://evil.example/"}).action != "allow")
 
+    # === 16. `allow last` must not write a grant that does nothing ========
+    # Was: hard_blocked() probed the folded glob, not the resources that were
+    # actually refused. A blocked write to ~/.claude/settings.json folds to
+    # ~/.claude/*, which no rule blocks, so `allow last` cheerfully wrote a
+    # grant that permitted nothing and told the user it had permitted something.
+    from airlock import grants as _grants
+    pol = _Policy.load(str(_config.profile_path("default")))
+    g = {"tool": "Write", "match": "/h/.claude/*"}
+    s.check("probing the folded glob alone still misses it",
+            _grants.hard_blocked(pol, g) is None)
+    s.check("the concrete resource is what gets checked",
+            _grants.hard_blocked(pol, g, ["/h/.claude/settings.json"]) is not None,
+            _grants.hard_blocked(pol, g, ["/h/.claude/settings.json"]))
+    s.check("an ordinary grant is still allowed through",
+            _grants.hard_blocked(pol, {"tool": "Read", "match": "/srv/data/*"},
+                                 ["/srv/data/f1.csv"]) is None)
+
+    # === 17. exported evidence names the build that produced it ============
+    from airlock import export as _export, __version__ as _v
+    s.check("CEF carries the real package version", f"|{_v}|" in _export._version()
+            or _export._version() == _v, _export._version())
+
     return s.report()
 
 

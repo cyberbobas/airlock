@@ -118,13 +118,23 @@ def propose(event: dict) -> dict | None:
     return grant
 
 
-def hard_blocked(pol, grant: dict) -> str | None:
+def hard_blocked(pol, grant: dict, resources=()) -> str | None:
     """Would an absolute block rule still refuse this? Then say so up front
-    rather than writing a grant that quietly does nothing."""
-    probe = grant.get("match", "").replace("*", "") or grant["tool"]
-    d = pol.decide(grant["tool"], {"path": probe} if "/" in probe else {"q": probe})
-    if d.action == "block" and (d.rule is None or d.rule >= 0):
-        return d.reason
+    rather than writing a grant that quietly does nothing.
+
+    The concrete resources matter, not just the folded glob. `allow last` on a
+    refused write to `~/.claude/settings.json` folds to `~/.claude/*`, and that
+    parent directory is not blocked — so probing the glob alone wrote a grant
+    that looked like it had permitted something and had permitted nothing.
+    """
+    probes = [r for r in resources if r] or []
+    stripped = grant.get("match", "").replace("*", "") or grant["tool"]
+    probes.append(stripped)
+    for probe in probes:
+        d = pol.decide(grant["tool"],
+                       {"path": probe} if "/" in probe else {"q": probe})
+        if d.action == "block" and (d.rule is None or d.rule >= 0):
+            return d.reason
     return None
 
 

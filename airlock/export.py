@@ -12,6 +12,14 @@ from pathlib import Path
 
 from . import audit
 
+
+def _version() -> str:
+    """The real package version. A SIEM record that misstates which build made
+    the decision is evidence about nothing in particular."""
+    from . import __version__
+    return __version__
+
+
 _SEVERITY = {"block": 8, "hold": 8, "ask": 5, "flag": 4, "allow": 2,
              "admit": 2, "change": 6}
 _CEF_ESCAPE = str.maketrans({"\\": r"\\", "|": r"\|", "=": r"\="})
@@ -60,7 +68,7 @@ def to_cef(rec: dict) -> str:
         ext["cs6Label"] = "scanFlags"
         ext["cs6"] = _esc(",".join(f.get("id", "?") for f in rec["flags"]))
     body = " ".join(f"{k}={v}" for k, v in ext.items() if v)
-    return (f"CEF:0|Airlock|airlock|{audit.__dict__.get('__version__', '0.3.0')}|"
+    return (f"CEF:0|Airlock|airlock|{_version()}|"
             f"{_esc(rec.get('event','decision'))}|{_esc(name)}|{sev}|{body}")
 
 
