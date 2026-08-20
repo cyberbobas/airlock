@@ -61,6 +61,12 @@ _CHAINED = ("ts", "event", "source", "server", "tool", "decision", "effective",
 _LEDGER_CHAINED = ("segment", "last", "at", "prev")
 _ANCHOR = "ledger="
 _ROTATING = False
+# Written into the first record of every live file this version creates, so a
+# missing audit.head can be told apart from a log that never had one. Without
+# it, truncating the tail and deleting the checkpoint produced the same verdict
+# as an install that predates checkpointing — the attacker got to choose which
+# story the auditor read, for the price of one `rm`.
+_HEAD_MARK = "checkpointed"
 
 # Rotation renames the live file. Anything appending through an fd it opened
 # before the rename keeps writing into the *rotated* segment — after the ledger
@@ -255,6 +261,13 @@ def record(event: str, *, source: str, tool: str = "", server: str = "",
            decision: str = "", effective: str = "", reason: str = "",
            args=None, flags=None, session: str = "", extra: str = "",
            resource: str = "") -> dict:
+    if not _ROTATING and event != "audit_start":
+        try:
+            live = audit_path()
+            if not live.exists() or live.stat().st_size == 0:
+                _mark_checkpointed()
+        except OSError:
+            pass
     rec = {
         "ts": _now(),
         "event": event,           # decision | toolset_admitted | toolset_held | scan_flag
@@ -280,7 +293,7 @@ def record(event: str, *, source: str, tool: str = "", server: str = "",
 def _write_record(path: Path, rec: dict, effective: str, decision: str) -> None:
     """Append one chained record. Caller holds the append lock."""
     _rotate_if_needed(path)
-    existed = path.exists()
+    existed = path.exists() and path.stat().st_size > 0
     with open(path, "a+b") as f:
         if not existed:
             # Rotated segments were chmod 0600 while the live file — the one
@@ -618,6 +631,21 @@ def _append_lock():
                     _flock_fh = None
 
 
+def _mark_checkpointed() -> None:
+    """Record, inside the chain, that this log is checkpointed."""
+    global _ROTATING
+    if _ROTATING:
+        return
+    _ROTATING = True
+    try:
+        record("audit_start", source="audit", effective="admit",
+               reason="audit log opened", extra=_HEAD_MARK)
+    except Exception:
+        pass
+    finally:
+        _ROTATING = False
+
+
 def verify(path: Path | None = None, *, all_segments: bool = False
            ) -> tuple[bool, int, str]:
     """Walk the hash chain. Return (ok, n_records, message).
@@ -646,6 +674,7 @@ def verify(path: Path | None = None, *, all_segments: bool = False
     unsigned = 0
     badsig = 0
     anchors: list[tuple[str, str]] = []      # (segment named, ledger digest)
+    expects_head = False
     for p in files:
         first = True
         for lineno, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
@@ -681,6 +710,8 @@ def verify(path: Path | None = None, *, all_segments: bool = False
                     badsig += 1
             else:
                 unsigned += 1
+            if rec.get("event") == "audit_start" and rec.get("detail") == _HEAD_MARK:
+                expects_head = True
             if rec.get("event") == "rotation" and str(rec.get("detail", "")).startswith(_ANCHOR):
                 anchors.append((str(rec.get("resource", "")),
                                 str(rec["detail"])[len(_ANCHOR):]))
@@ -701,6 +732,12 @@ def verify(path: Path | None = None, *, all_segments: bool = False
     # end, so compare against what the last write recorded.
     head = read_head()
     tail_note = ""
+    if head is None and expects_head:
+        # The log says, inside its own chain, that it is checkpointed. A
+        # missing audit.head is therefore a deletion, not an old install —
+        # and deleting it is step two of truncating the tail.
+        return False, n, ("the log records that it is checkpointed, but "
+                          "audit.head is missing — it was deleted")
     if head is not None:
         if not head_ok(head):
             return False, n, ("the tail checkpoint (audit.head) does not verify "

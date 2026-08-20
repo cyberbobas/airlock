@@ -85,6 +85,9 @@ that fires rarely, so nothing ever ran it.
 | Credential coverage stopped at ssh and aws | gcloud ADC, the GitHub CLI token, in-cluster service-account tokens, PyPI/crates.io/RubyGems/Terraform credentials, keyrings, browser cookie and password stores and shell history were all readable | all added, with a corpus asserting ordinary files with similar names still pass |
 | A contract's fs scope was checked on the raw path | `normpath` does nothing for `%2e%2e`, so a percent-encoded traversal stayed "inside" a scope the plain `../` form escaped | the path is folded before `..` is collapsed |
 | An unreadable grant expiry meant "never expires" | `expires: not-a-date` and `9999-99-99` both sorted later than today's string, so a malformed date granted forever — the inversion of what it means | expiries must be YYYY-MM-DD and are rejected at load; an unreadable one does not grant |
+| A hold depended on being able to write it down | `check_toolset` set `held=True` in memory and saved; `is_held` re-read the file. With an unwritable `$AIRLOCK_HOME` the save failed and a rug pull went straight through — the drift was noticed and then evaporated | the hold is kept in the process too; the disk copy still wins when it is fresher |
+| Deleting `audit.head` downgraded a truncation to a gap | truncating the tail and removing the checkpoint read the same as an install that predates checkpointing, so one extra `rm` chose which story the auditor saw | every live file records inside its own chain that it is checkpointed; a missing checkpoint on such a log is a deletion |
+| The proxy crashed when its home was unusable | the right verdict — no server, no calls — delivered as a stack trace, with nothing naming the directory at fault | a clean refusal, exit 78 |
 
 What deep testing confirmed rather than broke: 480 concurrent audit records with
 no loss or tearing, 20 concurrent pins with exactly one `new`, an audit chain

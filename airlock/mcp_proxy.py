@@ -370,8 +370,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[airlock] refusing to start: cannot load policy {path}: {e}",
               file=sys.stderr)
         return 78  # EX_CONFIG
-    audit.record("proxy_start", source="mcp", server=server_id, effective="admit",
-                 reason=f"mode={policy.mode}", extra=" ".join(argv))
+    try:
+        audit.record("proxy_start", source="mcp", server=server_id, effective="admit",
+                     reason=f"mode={policy.mode}", extra=" ".join(argv))
+    except Exception as e:
+        # An unwritable $AIRLOCK_HOME used to escape as a traceback: the server
+        # simply never came up and the user saw a stack trace with no idea
+        # which part of their setup was at fault. Refusing is right; refusing
+        # legibly is the difference between a security control and a crash.
+        print(f"[airlock] refusing to start: cannot use {config.home()}: {e}",
+              file=sys.stderr)
+        return 78  # EX_CONFIG
     try:
         return Proxy(server_id, argv, policy).run()
     except FileNotFoundError as e:

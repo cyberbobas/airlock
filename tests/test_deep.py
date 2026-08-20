@@ -73,7 +73,8 @@ for i in range(40):
     audit.record('decision', source='p{t}', tool=f't{{i}}', decision='allow',
                  effective='allow', reason='concurrent')
 """ for t in range(12)], home)
-    lines = [l for l in (home / "audit.jsonl").read_text().splitlines() if l.strip()]
+    lines = [l for l in (home / "audit.jsonl").read_text().splitlines()
+             if l.strip() and json.loads(l).get("event") == "decision"]
     s.check("480 concurrent records, none lost or torn",
             len(lines) == 480 and all(_json_ok(l) for l in lines), len(lines))
     s.check("chain valid under 12 concurrent writers",
@@ -470,6 +471,63 @@ print("SURVIVED")
     finally:
         os.environ.clear()
         os.environ.update(saved)
+
+    # === 14. a hold must not depend on being able to write it down ========
+    # Was: check_toolset() set held=True in memory and saved; is_held() then
+    # re-read the file. With an unwritable $AIRLOCK_HOME the save failed, the
+    # file still said held=False, and a rug pull went straight through —
+    # detection happened and then evaporated because it could not be recorded.
+    from airlock import pins as _pins
+    ph = pathlib.Path(tempfile.mkdtemp(prefix="deep-pins-"))
+    old_home = os.environ.get("AIRLOCK_HOME")
+    os.environ["AIRLOCK_HOME"] = str(ph)
+    importlib.reload(_pins)
+    T1 = [{"name": "read_note", "description": "Read a note."}]
+    T2 = T1 + [{"name": "run_command", "description": "Run anything."}]
+    s.check("first sight of a toolset pins it",
+            _pins.check_toolset("s", T1, [])[0] == "new")
+    os.chmod(ph, 0o500)
+    try:
+        status, _ = _pins.check_toolset("s", T2, [])
+        s.check("a drift is still noticed when the pin file is unwritable",
+                status == "changed", status)
+        held, why = _pins.is_held("s")
+        s.check("and the hold takes effect anyway", held, why)
+        s.check("the hold survives a repeat within the process",
+                _pins.is_held("s")[0])
+    finally:
+        os.chmod(ph, 0o700)
+    s.check("approving clears the in-process hold",
+            "re-pinned" in _pins.approve("s") or not _pins.is_held("s")[0])
+    s.check("...and the server is released", not _pins.is_held("s")[0])
+    if old_home is None:
+        os.environ.pop("AIRLOCK_HOME", None)
+    else:
+        os.environ["AIRLOCK_HOME"] = old_home
+    importlib.reload(_pins)
+
+    # === 15. the proxy refuses legibly when its home is unusable ==========
+    # Was: a traceback. Right verdict (no server = no calls), wrong delivery —
+    # the user saw a stack trace and no clue which part of the setup was bad.
+    ph2 = pathlib.Path(tempfile.mkdtemp(prefix="deep-ro-"))
+    os.chmod(ph2, 0o500)
+    try:
+        r = subprocess.run(
+            [sys.executable, "-m", "airlock.mcp_proxy", "--server-id", "t", "--",
+             sys.executable, str(ROOT / "examples" / "demo_server.py")],
+            input=b'{"jsonrpc":"2.0","id":1,"method":"initialize"}\n',
+            capture_output=True,
+            env=dict(os.environ, PYTHONPATH=str(ROOT), AIRLOCK_HOME=str(ph2),
+                     AIRLOCK_NOTIFY="0", AIRLOCK_ASK_BACKEND="fallback"),
+            timeout=60)
+    finally:
+        os.chmod(ph2, 0o700)
+    s.check("an unusable home is a refusal, not a crash", r.returncode == 78,
+            r.returncode)
+    s.check("no traceback reaches the user", b"Traceback" not in r.stderr,
+            r.stderr.decode()[-160:])
+    s.check("the message names the directory", b"refusing to start" in r.stderr,
+            r.stderr.decode()[:160])
 
     return s.report()
 

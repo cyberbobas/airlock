@@ -101,6 +101,16 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+# A hold decided in this process, whether or not it reached the disk.
+#
+# check_toolset() set held=True in memory and saved; is_held() then re-read the
+# file. With an unwritable $AIRLOCK_HOME the save failed, the file still said
+# held=False, and a rug pull sailed through — detection had happened and then
+# evaporated because it could not be written down. Noticing must not depend on
+# being able to record that you noticed.
+_HELD_NOW: dict[str, dict] = {}
+
+
 def check_toolset(server_id: str, tools: list[dict], flags: list[dict]):
     """Return (status, pin). status in {'new','unchanged','changed','held'}."""
     h = toolset_hash(tools)
@@ -123,9 +133,11 @@ def check_toolset(server_id: str, tools: list[dict], flags: list[dict]):
                 prev["held"] = False
                 prev.pop("pending", None)
                 prev["persisted"] = save(data)
+            _HELD_NOW.pop(server_id, None)
             return "unchanged", prev
 
         if prev.get("held") and (prev.get("pending") or {}).get("hash") == h:
+            _HELD_NOW[server_id] = prev
             return "held", prev            # already flagged, still not approved
 
         # New drift: park it, keep the OLD hash authoritative, start holding.
@@ -135,11 +147,17 @@ def check_toolset(server_id: str, tools: list[dict], flags: list[dict]):
                            "seen_at": _now()}
         prev["held"] = True
         prev["persisted"] = save(data)
+        _HELD_NOW[server_id] = prev
         return "changed", prev
 
 
 def is_held(server_id: str) -> tuple[bool, str]:
+    # Disk first: it is the fresher, richer copy — `approve` and `reject` write
+    # there, possibly from another process. Memory is only the fallback for a
+    # hold this process decided but could not persist.
     pin = load().get(server_id) or {}
+    if not pin.get("held"):
+        pin = _HELD_NOW.get(server_id) or pin
     if not pin.get("held"):
         return False, ""
     pend = pin.get("pending") or {}
@@ -154,6 +172,7 @@ def is_held(server_id: str) -> tuple[bool, str]:
 
 
 def approve(server_id: str) -> str:
+    _HELD_NOW.pop(server_id, None)      # a human ruled; the in-process fallback is stale
     with _Lock():
         data = load()
         pin = data.get(server_id)
@@ -178,6 +197,7 @@ def approve(server_id: str) -> str:
 
 
 def reject(server_id: str) -> str:
+    _HELD_NOW.pop(server_id, None)      # a human ruled; the in-process fallback is stale
     with _Lock():
         data = load()
         pin = data.get(server_id)
@@ -203,6 +223,7 @@ def reject(server_id: str) -> str:
 
 
 def forget(server_id: str) -> str:
+    _HELD_NOW.pop(server_id, None)      # a human ruled; the in-process fallback is stale
     with _Lock():
         data = load()
         if data.pop(server_id, None) is None:

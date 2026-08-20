@@ -86,15 +86,42 @@ def main():
         s.check(f"removing the last {cut} record(s) is detected",
                 v.startswith("FAIL") and "truncated" in v, v)
 
+    # Deleting the checkpoint used to downgrade a truncation to "INCOMPLETE",
+    # which reads the same as an install that predates checkpointing — so the
+    # attacker chose which story the auditor saw, for one extra `rm`. Every
+    # live file now says inside its own chain that it is checkpointed, and a
+    # missing audit.head on such a log is a deletion.
     home, env = _write(10)
     (home / "audit.head").unlink()
     v = _verify(env)
-    s.check("a missing tail checkpoint is reported, not silently accepted",
-            "no tail checkpoint" in v, v)
+    s.check("deleting the tail checkpoint is detected as tampering",
+            v.startswith("FAIL") and "it was deleted" in v, v)
     r = subprocess.run([sys.executable, "-m", "airlock.cli", "verify"],
                        env=env, capture_output=True, text=True)
-    s.check("...and `airlock verify` exits 2 for it, not 0", r.returncode == 2,
+    s.check("...and `airlock verify` fails for it", r.returncode == 1,
             f"rc={r.returncode}")
+
+    home, env = _write(10)
+    p = home / "audit.jsonl"
+    kept = [l for l in p.read_text().splitlines()
+            if json.loads(l).get("event") != "audit_start"]
+    from airlock import audit as _audit
+    prev = _audit.GENESIS
+    rebuilt = []
+    for l in kept:
+        rec = json.loads(l)
+        rec["prev"] = prev
+        rec["h"] = _audit.chain_digest(rec)
+        prev = rec["h"]
+        rebuilt.append(json.dumps(rec))
+    p.write_text("\n".join(rebuilt) + "\n")
+    (home / "audit.head").unlink()
+    v = _verify(env)
+    s.check("a log that predates checkpointing is INCOMPLETE, not tampered",
+            v.startswith("OK") and "no tail checkpoint" in v, v)
+    r = subprocess.run([sys.executable, "-m", "airlock.cli", "verify"],
+                       env=env, capture_output=True, text=True)
+    s.check("...and exits 2 for it", r.returncode == 2, f"rc={r.returncode}")
 
     home, env = _write(10)
     r = subprocess.run([sys.executable, "-m", "airlock.cli", "verify"],
