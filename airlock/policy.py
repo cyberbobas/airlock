@@ -45,6 +45,8 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
@@ -98,15 +100,43 @@ class Policy:
     path: Path | None = None
     source: str = ""
     profile: str = ""
+    # A repository's own .airlock/policy.yaml. Consulted for every decision,
+    # but only ever to make one stricter — see resolve().
+    overlay: "Policy | None" = None
 
     # ---- loading -------------------------------------------------------
     @classmethod
     def resolve(cls) -> "Policy":
-        """Load whichever policy applies here: env, then project, then user,
-        then the bundled profile."""
-        path, why = config.resolve_policy()
+        """The machine's policy, with a repository's policy layered on top.
+
+        The layer can only TIGHTEN. `.airlock/policy.yaml` used to win outright,
+        which meant a cloned repository could ship four lines — `default: allow`,
+        `rules: []` — and every gate on the machine went quiet: `rm -rf /`
+        allowed, `~/.ssh/id_rsa` readable, the user's own paranoid profile
+        superseded without a word. Cloning a repository is the most ordinary
+        thing an agent does, and the file is a dotfile nobody reads.
+
+        Teams committing a *stricter* policy to a repository still get exactly
+        that, which was the feature's real purpose.
+        """
+        path, why, proj = config.resolve_policy_chain()
         pol = cls.load(path)
         pol.source = why
+        if proj:
+            try:
+                over = cls.load(proj)
+            except Exception as e:
+                raise ValueError(f"project policy {proj}: {e}") from e
+            over.source = "project"
+            # A repository cannot grant itself permissions.
+            over.grants = []
+            pol.overlay = over
+            pol.mode = _strictest_mode(pol.mode, over.mode)
+            pol.default = _stricter(pol.default, over.default)
+            pol.ask_fallback = _stricter(pol.ask_fallback, over.ask_fallback)
+            for sev, act in (over.escalate or {}).items():
+                cur = pol.escalate.get(sev)
+                pol.escalate[sev] = act if cur is None else _stricter(cur, act)
         return pol
 
     @classmethod
@@ -153,7 +183,8 @@ class Policy:
         loads — but nothing is being enforced, and `airlock doctor` says so
         rather than letting the install look healthy.
         """
-        return any(r.get("action") == BLOCK for r in self.rules if isinstance(r, dict))
+        mine = any(r.get("action") == BLOCK for r in self.rules if isinstance(r, dict))
+        return mine or bool(self.overlay and self.overlay.has_teeth())
 
     def validate(self) -> None:
         """Reject a malformed policy loudly — a security tool must not run on a
@@ -178,13 +209,25 @@ class Policy:
 
     # ---- decision ------------------------------------------------------
     def decide(self, tool: str, args: dict | None) -> Decision:
-        """Raw rule decision. `ask` is NOT collapsed here — each enforcement
-        point resolves it (hook -> human prompt, proxy -> ask channel)."""
+        """Raw rule decision, tightened by the project overlay if there is one.
+
+        `ask` is NOT collapsed here — each enforcement point resolves it
+        (hook -> human prompt, proxy -> ask channel).
+        """
+        d = self._decide_own(tool, args)
+        if self.overlay is None:
+            return d
+        o = self.overlay._decide_own(tool, args)
+        if RANK[o.action] > RANK[d.action]:
+            return Decision(o.action, f"{o.reason} [project policy]", o.rule)
+        return d
+
+    def _decide_own(self, tool: str, args: dict | None) -> Decision:
         args = args or {}
         primary = render_action(tool, args)
 
         # 1. absolute blocks, over the primary field and every hidden string
-        hit = self._match(tool, primary.lower(), block_only=True)
+        hit = self._match(tool, normalize(primary), block_only=True)
         if hit is not None:
             return hit
         budget = Budget()
@@ -193,7 +236,7 @@ class Policy:
             if s in seen:
                 continue
             seen.add(s)
-            hit = self._match(tool, s.lower(), block_only=True)
+            hit = self._match(tool, normalize(s), block_only=True)
             if hit is not None:
                 return Decision(BLOCK,
                                 f"{hit.reason} (hidden in argument: {_ellipsis(s)})",
@@ -208,12 +251,12 @@ class Policy:
                             None)
 
         # 2. reviewed grants
-        g = self._match_grant(tool, primary.lower())
+        g = self._match_grant(tool, normalize(primary))
         if g is not None:
             return g
 
         # 3. the rule list, first match wins; 4. the default
-        return self._match(tool, primary.lower())
+        return self._match(tool, normalize(primary))
 
     def _match_grant(self, tool: str, text: str) -> Decision | None:
         today = _today()
@@ -284,6 +327,18 @@ class Policy:
 
 
 # ---- helpers -----------------------------------------------------------
+def _stricter(a: str, b: str) -> str:
+    return a if RANK.get(a, 1) >= RANK.get(b, 1) else b
+
+
+_MODE_RANK = {OBSERVE: 0, GUARD: 1, ENFORCE: 2}
+
+
+def _strictest_mode(a: str, b: str) -> str:
+    return a if _MODE_RANK.get(a, 1) >= _MODE_RANK.get(b, 1) else b
+
+
+
 def _tool_match(tool: str, pat: str) -> bool:
     """Case-insensitively, as the profiles say and as `match` already was.
 
@@ -392,6 +447,39 @@ _FIELD = {
     "glob": ("pattern", "path"),
     "grep": ("pattern", "path"),
 }
+
+
+_PCT = re.compile(r"%[0-9a-fA-F]{2}")
+
+
+def normalize(text: str) -> str:
+    """Fold the spellings that mean the same path down to one, for matching.
+
+    Rules are string matches, so `~/%2essh/config` and a fullwidth `~/．ssh/`
+    sailed straight past `*/.ssh/*` while still naming that directory to
+    anything which percent-decodes a URI or normalises Unicode. Decoded twice,
+    because `%252e` is how you get a `%2e` past one round of decoding.
+
+    A matching aid only: it never changes what gets passed on. A tool that does
+    NOT decode simply sees a rule fire on a path it would not have opened,
+    which is the safe direction to be wrong in.
+    """
+    # Fast path: the overwhelming majority of arguments are plain ASCII with
+    # nothing to fold, and this runs on every string in the deny sweep.
+    if text.isascii() and "%" not in text and "\\" not in text:
+        return text.lower()
+    out = unicodedata.normalize("NFKC", text)
+    for _ in range(2):
+        if "%" not in out:
+            break
+        try:
+            dec = _PCT.sub(lambda m: chr(int(m.group(0)[1:], 16)), out)
+        except Exception:
+            break
+        if dec == out:
+            break
+        out = dec
+    return out.replace("\\", "/").lower()
 
 
 def render_action(tool: str, args: dict) -> str:

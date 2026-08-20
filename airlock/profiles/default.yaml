@@ -61,6 +61,22 @@ rules:
   - { tool: "*", match: "*.kube/config*",     action: block, reason: "kubeconfig" }
   - { tool: "*", match: "*.git-credentials*", action: block, reason: "git credentials" }
   - { tool: "*", match: "*.netrc*",           action: block, reason: "netrc credentials" }
+  # The families an exfil payload actually reaches for, beyond ssh and aws.
+  - { tool: "*", match: "*.config/gcloud*",   action: block, reason: "Google Cloud credentials" }
+  - { tool: "*", match: "*.config/gh/*",      action: block, reason: "GitHub CLI token" }
+  - { tool: "*", match: "*.terraform.d*",     action: block, reason: "Terraform Cloud credentials" }
+  - { tool: "*", match: "*.pypirc*",          action: block, reason: "PyPI upload token" }
+  - { tool: "*", match: "*.cargo/credentials*", action: block, reason: "crates.io token" }
+  - { tool: "*", match: "*.gem/credentials*", action: block, reason: "RubyGems token" }
+  - { tool: "*", match: "*.gnupg*",           action: block, reason: "GnuPG keyring" }
+  - { tool: "*", match: "*run/secrets/kubernetes.io*", action: block, reason: "in-cluster service-account token" }
+  - { tool: "*", match: "*.local/share/keyrings*", action: block, reason: "desktop keyring" }
+  - { tool: "*", match: "*login.keychain*",   action: block, reason: "macOS keychain" }
+  - { tool: "*", match: "*/cookies.sqlite*",  action: block, reason: "browser cookie store" }
+  - { tool: "*", match: "*/Login Data*",      action: block, reason: "browser password store" }
+  - { tool: "*", match: "*ssh_auth_sock*",    action: block, reason: "SSH agent socket" }
+  - { tool: "*", match: "*/ssh-*/agent.*",    action: block, reason: "SSH agent socket" }
+  - { tool: "*", match: "*/.*_history*",      action: block, reason: "shell history often holds pasted secrets" }
   - { tool: "*", match: "*.npmrc*",           action: block, reason: "npm auth token" }
   - { tool: "*", match: "*.docker/config.json*", action: block, reason: "docker registry auth" }
 

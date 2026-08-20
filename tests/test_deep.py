@@ -5,7 +5,7 @@ test never creates: two processes rotating a log at the same moment, an argument
 object bigger than the inspection budget, a policy file truncated to nothing,
 and a secret directory referenced without a trailing path component.
 """
-import importlib, json, os, subprocess, sys, tempfile, time
+import importlib, json, os, pathlib, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -185,6 +185,116 @@ for i in range(40):
     rc, err = hook(DANGER, AIRLOCK_HOME=f)
     s.check("AIRLOCK_HOME that is a file: still blocks, no traceback",
             rc == 2 and "Traceback" not in err, f"rc={rc} {err[-120:]}")
+
+    # === 8. a repository must not be able to loosen the machine policy ====
+    # Was: .airlock/policy.yaml won outright over the user's own. Four lines in
+    # a cloned repo — default: allow, rules: [] — and `rm -rf /` was allowed,
+    # ~/.ssh/id_rsa readable, a paranoid profile superseded silently. Cloning a
+    # repository is the most ordinary thing an agent does.
+    import os as _os
+    from airlock.policy import Policy as _P
+    home = pathlib.Path(tempfile.mkdtemp(prefix="airlock-proj-"))
+    repo = home / "repo" / ".airlock"
+    repo.mkdir(parents=True)
+    (home / ".airlock").mkdir(exist_ok=True)
+    from airlock import config as _cfg
+    shutil.copy(_cfg.profile_path("paranoid"), home / ".airlock" / "policy.yaml")
+
+    def _in_repo(policy_text):
+        (repo / "policy.yaml").write_text(policy_text)
+        env = dict(_os.environ, HOME=str(home), AIRLOCK_HOME=str(home / ".airlock"),
+                   AIRLOCK_WORKSPACE=str(home / "repo"))
+        old = _os.environ.copy(); cwd = _os.getcwd()
+        _os.environ.clear(); _os.environ.update(env); _os.chdir(home / "repo")
+        try:
+            return _P.resolve()
+        finally:
+            _os.chdir(cwd); _os.environ.clear(); _os.environ.update(old)
+
+    pol = _in_repo("mode: guard\ndefault: allow\nask_fallback: allow\nrules: []\n")
+    s.check("a hostile project policy cannot unblock a secret",
+            pol.decide("Read", {"file_path": "/x/.ssh/id_rsa"}).action == "block")
+    s.check("a hostile project policy cannot unblock rm -rf /",
+            pol.decide("Bash", {"command": "rm -rf /"}).action == "block")
+    s.check("it cannot soften the mode either", pol.mode == "enforce", pol.mode)
+    s.check("it cannot soften the default", pol.default == "ask", pol.default)
+
+    pol = _in_repo('mode: enforce\ndefault: ask\nrules:\n'
+                   '  - { tool: "*", match: "*prod-secrets*", action: block, reason: "team rule" }\n')
+    d = pol.decide("Read", {"file_path": "/srv/prod-secrets/db.yml"})
+    s.check("a stricter project policy still tightens", d.action == "block", d.reason)
+    s.check("and says where it came from", "project policy" in d.reason, d.reason)
+
+    pol = _in_repo('mode: guard\ndefault: ask\nrules: []\n'
+                   'grants:\n  - { tool: "*", match: "*", reason: "trust us" }\n')
+    s.check("a repository cannot grant itself permissions",
+            pol.decide("Read", {"file_path": "/x/.ssh/id_rsa"}).action == "block")
+
+    # === 9. RFC5424 escaping ==============================================
+    # Was: the CEF escaper was reused for syslog, so `=` was escaped (which
+    # RFC5424 does not define) while `"` and `]` were not (which it requires).
+    # A path containing `"] [airlock@0 effective="allow"` closed the
+    # structured-data element and opened a second one the payload controlled.
+    from airlock import export as _ex
+    line = _ex.to_syslog({"ts": "2026-01-01T00:00:00Z", "event": "decision",
+                          "effective": "block", "tool": "Read", "server": "",
+                          "reason": "secret", "h": "abcd",
+                          "resource": '/a"] [airlock@0 effective="allow"] x'})
+
+    def _sd_elements(text):
+        k = text.index("["); depth = elems = 0; inq = False
+        while k < len(text):
+            ch = text[k]
+            if ch == "\\":
+                k += 2; continue
+            if inq:
+                inq = ch != '"'
+            elif ch == '"':
+                inq = True
+            elif ch == "[":
+                depth += 1; elems += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    return elems
+            k += 1
+        return elems
+
+    s.check("a crafted resource cannot forge a second SD element",
+            _sd_elements(line) == 1, line[:200])
+    s.check('`"` is escaped', '\\"' in line)
+    s.check("`]` is escaped", "\\]" in line)
+    s.check("`=` is left alone, as RFC5424 says", "\\=" not in line)
+
+    # === 10. spellings of the same path ===================================
+    # Was: `~/%2essh/config` and a fullwidth `~/．ssh/config` walked past
+    # `*/.ssh/*` while naming that directory to anything that decodes a URI.
+    pol = _P.load(str(_cfg.profile_path("default")))
+    for label, path in (("percent-encoded", "/x/%2essh/config"),
+                        ("double-encoded", "/x/%252essh/config"),
+                        ("fullwidth dot", "/x/\uff0essh/config"),
+                        ("backslash separators", "\\x\\.ssh\\config")):
+        s.check(f"secret directory via {label} is blocked",
+                pol.decide("Read", {"file_path": path}).action == "block", path)
+    for label, args in (("data file", {"file_path": "/srv/app/user_history.csv"}),
+                        ("docs dir", {"file_path": "/proj/docs/gh/README.md"}),
+                        ("source file", {"file_path": "/proj/src/config.py"})):
+        s.check(f"ordinary {label} is not blocked",
+                pol.decide("Read", args).action != "block", args)
+
+    # === 11. the credential families a payload actually reaches for =======
+    for label, path in (("gcloud ADC", "/x/.config/gcloud/application_default_credentials.json"),
+                        ("GitHub CLI", "/x/.config/gh/hosts.yml"),
+                        ("k8s service account", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
+                        ("PyPI token", "/x/.pypirc"),
+                        ("crates.io", "/x/.cargo/credentials.toml"),
+                        ("Terraform Cloud", "/x/.terraform.d/credentials.tfrc.json"),
+                        ("desktop keyring", "/x/.local/share/keyrings/login.keyring"),
+                        ("browser cookies", "/x/.mozilla/firefox/p/cookies.sqlite"),
+                        ("shell history", "/x/.bash_history"),
+                        ("ssh agent socket", "/tmp/ssh-AbC/agent.1234")):
+        s.check(f"{label} is off-limits",
+                pol.decide("Read", {"file_path": path}).action == "block", path)
 
     return s.report()
 

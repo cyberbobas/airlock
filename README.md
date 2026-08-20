@@ -117,10 +117,10 @@ This is a security property, not an implementation detail:
 ## Overhead — measured, not assumed
 
 ```
-policy decision      p50   180 µs    p99  1025 µs
-MCP call, direct     p50  0.064 ms   p99  0.082 ms
-MCP call, gated      p50  0.605 ms   p99  0.692 ms
-added by Airlock     p50  0.540 ms   p99  0.610 ms
+policy decision      p50   249 µs    p99  1506 µs
+MCP call, direct     p50  0.064 ms   p99  0.096 ms
+MCP call, gated      p50  0.729 ms   p99  0.946 ms
+added by Airlock     p50  0.665 ms   p99  0.850 ms
 peak RSS             27 MB
 ```
 
@@ -260,16 +260,27 @@ answer; we say so rather than calling the cheap one "signed audit".
 
 ## Per-project policy
 
-Resolution order — first hit wins:
+A repository may ship `.airlock/policy.yaml` (or `.airlock.yaml`), found by
+walking up to the repo root. It is an **overlay that can only tighten**: every
+decision is taken against your policy *and* the project's, and the stricter one
+wins. Its `mode`, `default` and `ask_fallback` can only get stricter, and its
+`grants:` are ignored outright.
 
-1. `AIRLOCK_POLICY`
-2. `.airlock/policy.yaml` or `.airlock.yaml` in the repo (walking up to its root)
-3. `$AIRLOCK_HOME/policy.yaml` (yours, written by `airlock init`)
-4. the bundled profile
+That asymmetry is the whole point. A project policy that could win outright
+meant `git clone` was a way to switch the firewall off — four lines in a dotfile
+nobody reads (`default: allow`, `rules: []`) and `rm -rf /` was allowed on a
+machine running the paranoid profile. Working on code nobody has read is the
+situation Airlock exists for; that code does not get a vote on its own gate.
 
-So a team can commit a strict policy to the repo it applies to while a personal
-machine-wide one covers everything else. Paths use `${workspace}`, `${home}`,
-`${user}`, `${tmp}` — no absolute paths in a shared file.
+Your own policy is found in this order:
+
+1. `AIRLOCK_POLICY` (an explicit choice — it takes no overlay)
+2. `$AIRLOCK_HOME/policy.yaml` (yours, written by `airlock init`)
+3. the bundled profile
+
+`airlock doctor` names both files and says which is the overlay. Paths use
+`${workspace}`, `${home}`, `${user}`, `${tmp}` — no absolute paths in a shared
+file.
 
 ## Commands
 

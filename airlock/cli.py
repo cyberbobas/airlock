@@ -203,12 +203,16 @@ def cmd_verify(a) -> int:
 def cmd_doctor(a) -> int:
     """Tell the operator what is actually enforcing, not what is installed."""
     rows = []
-    pol_path, why = config.resolve_policy()
+    pol_path, why, proj = config.resolve_policy_chain()
     try:
-        pol = Policy.load(pol_path)
-        pol.source = why
+        pol = Policy.resolve()
         rows.append(("ok", f"policy: {pol_path} ({why})"))
         rows.append(("ok", f"policy loads: {len(pol.rules)} rules, mode={pol.mode}"))
+        if proj:
+            over = pol.overlay
+            rows.append(("ok", f"project overlay: {proj} — "
+                               f"{len(over.rules) if over else 0} rules, tighten-only "
+                               f"(a repository cannot loosen your policy)"))
         if not pol.has_teeth() and pol.mode != "observe":
             rows.append(("bad", "this policy has no block rules — nothing is being "
                                 "enforced (airlock profile default --force)"))

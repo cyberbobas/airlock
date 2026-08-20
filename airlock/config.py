@@ -83,18 +83,36 @@ def project_policy(start: Path | None = None) -> Path | None:
 
 
 def resolve_policy() -> tuple[Path, str]:
-    """Return (path, why). The `why` string is what `airlock doctor` prints."""
+    """Return (path, why) for the policy that OWNS this machine's posture.
+
+    Deliberately not the project policy. A `.airlock/policy.yaml` inside a
+    repository is written by whoever wrote the repository, and the whole point
+    of Airlock is that an agent works on code nobody has read. Letting that
+    file win meant `git clone` was a way to turn the firewall off. It is still
+    honoured — as an overlay that can only tighten — via resolve_policy_chain.
+    """
     env = os.environ.get("AIRLOCK_POLICY")
     if env:
         return Path(env).expanduser(), "AIRLOCK_POLICY"
-    proj = project_policy()
-    if proj:
-        return proj, "project"
     up = user_policy()
     if up.is_file():
         return up, "user"
     name = os.environ.get("AIRLOCK_PROFILE", DEFAULT_PROFILE)
     return profile_path(name), f"bundled profile '{name}'"
+
+
+def resolve_policy_chain() -> tuple[Path, str, Path | None]:
+    """(base path, why, project overlay or None).
+
+    An explicit AIRLOCK_POLICY is the user speaking, so it takes no overlay.
+    """
+    base, why = resolve_policy()
+    if os.environ.get("AIRLOCK_POLICY"):
+        return base, why, None
+    proj = project_policy()
+    if proj and proj.resolve() != base.resolve():
+        return base, why, proj
+    return base, why, None
 
 
 # ---- variable expansion ------------------------------------------------

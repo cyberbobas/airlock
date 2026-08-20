@@ -45,7 +45,24 @@ def _rows(days: float, path: Path | None = None):
 
 
 def _esc(v) -> str:
-    return str(v or "").translate(_CEF_ESCAPE).replace("\n", " ")
+    """CEF: backslash-escape `\\`, `=` and `|`; keep it on one line."""
+    return str(v or "").translate(_CEF_ESCAPE).replace("\n", " ").replace("\r", " ")
+
+
+def _sd(v) -> str:
+    """RFC5424 PARAM-VALUE (§6.3.3): escape `\\`, `"` and `]` — those three and
+    nothing else.
+
+    Reusing the CEF escaper here escaped `=`, which RFC5424 does not define,
+    and left `"` and `]` alone, which it requires. A file path containing
+    `"] [airlock@0 effective="allow"` therefore closed the structured-data
+    element and opened a second one the caller controlled outright: a SIEM
+    parsed two elements, the second forged. Evidence that a payload can extend
+    is not evidence.
+    """
+    out = str(v or "")
+    out = out.replace("\\", "\\\\").replace('"', '\\"').replace("]", "\\]")
+    return "".join(" " if ch < " " or ch == "\x7f" else ch for ch in out)
 
 
 def to_cef(rec: dict) -> str:
@@ -79,10 +96,11 @@ def to_syslog(rec: dict, host: str | None = None, app: str = "airlock") -> str:
     pri = 16 * 8 + sev
     host = host or socket.gethostname()
     ts = rec.get("ts", "") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    sd = (f'[airlock@0 event="{_esc(rec.get("event"))}" effective="{_esc(eff)}" '
-          f'tool="{_esc(rec.get("tool"))}" server="{_esc(rec.get("server"))}" '
-          f'resource="{_esc(rec.get("resource"))}" digest="{_esc(rec.get("h"))}"]')
-    return f"<{pri}>1 {ts} {host} {app} - - {sd} {_esc(rec.get('reason'))}"
+    sd = (f'[airlock@0 event="{_sd(rec.get("event"))}" effective="{_sd(eff)}" '
+          f'tool="{_sd(rec.get("tool"))}" server="{_sd(rec.get("server"))}" '
+          f'resource="{_sd(rec.get("resource"))}" digest="{_sd(rec.get("h"))}"]')
+    msg = "".join(" " if ch < " " else ch for ch in str(rec.get("reason") or ""))
+    return f"<{pri}>1 {_sd(ts)} {_sd(host)} {app} - - {sd} {msg}"
 
 
 FORMATS = ("jsonl", "cef", "syslog")
