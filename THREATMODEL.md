@@ -52,6 +52,13 @@ non-interactive uninstall. Each now has a regression in `tests/test_regressions.
 | `@modelcontextprotocol/server-*` bypassed the out-of-gate rule | the commonest spelling of an MCP server fell through to a generic ask, which `guard` allows | namespace patterns added and tested for every launch form |
 | The rotation ledger protected the log but nothing protected the ledger | it was plain unsigned JSONL that nothing referenced: deleting a segment *and* its one ledger line reported `CHAIN INTACT across 46 records` while 14 had vanished | the ledger is chained and signed, and every handover is anchored by a record inside the log — the two now have to agree |
 | Rotation stopped rotating inside a busy second | second-resolution segment names collided, `dest.exists()` returned, and the log grew past its cap until the clock ticked | microsecond stamps that bump on collision and still sort chronologically |
+| A hostile feed could hang the gate outright | feed patterns run in-process on every call and `re` cannot be interrupted: `(a+)+$` against forty characters never returned, so the proxy never answered and the agent hung. "Noisy, never blind" was true; "never wedged" was not | patterns are refused at install time if they nest an unbounded quantifier or fail timed probes in a killable child; scanned text is capped |
+| The hook exited 1 when `$AIRLOCK_HOME` was unusable | Claude Code blocks on exit 2 and *carries on* for every other code — the traceback was an allow | any escape from `main()` lands on 2 unless `AIRLOCK_FAIL_OPEN=1` |
+| Self-protection was scoped to `Bash` | an agent with a Write tool never needed a shell to add an ungated MCP server or delete the hook, and an unattended `ask` is an allow under `guard` | `.mcp.json` and `.claude/settings*.json` are blocked for every tool |
+| `airlock log` could be made to print a line that never happened | a file path containing a newline printed a second, fabricated decision; an ANSI escape could erase the real ones | control characters are escaped wherever a record is rendered |
+| `audit.jsonl` was 0644 while rotated segments were 0600 | the file holding the freshest paths, hosts and commands was the least protected one | the live file is chmod 0600 on creation |
+| Metadata SSRF only matched the dotted form | `http://2852039166/` is the same address; so are the hex, octal, v6-mapped and `nip.io` spellings | all six forms blocked, with a test that ordinary paths still are not |
+| `*fetch*` never matched `WebFetch` | fnmatch is case-sensitive on POSIX, so the shipped allow-list example silently never fired | tool patterns match case-insensitively, as the profiles always said |
 | The report counted allowed asks as "escalated to a block" | it over-claimed protection, in the direction that flatters the product | escalation and unattended-allow are counted and printed separately |
 | Backups collided within one second | the copy that lost was the original — the only one `uninstall` needs | backup names are made unique before writing |
 
@@ -82,6 +89,8 @@ Where a security tool degrades matters as much as what it blocks.
 | indicator feed hostile but installed | the bundled floor still fires; it can add, never remove | none |
 | audit log rotates | the chain continues into the new segment; the rotation is recorded in a ledger | none |
 | a whole audit segment is deleted or truncated | `verify` names the missing segment | none |
+| a feed pattern backtracks catastrophically | it never installs: refused at update time, before it can run on a call | none |
+| Airlock's own setup is broken (unusable `$AIRLOCK_HOME`) | the hook exits 2 — a gate that cannot start does not wave calls through | `AIRLOCK_FAIL_OPEN=1` |
 | a ledger line is edited, removed or the ledger deleted | the ledger's own chain breaks, or the anchor record in the log names an entry the ledger no longer has | none |
 | two rotations land in the same second | segment names carry microseconds and bump on collision, so rotation keeps rotating | none |
 | audit log unwritable | the decision is still enforced | none |

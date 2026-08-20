@@ -250,7 +250,15 @@ class Policy:
 
 # ---- helpers -----------------------------------------------------------
 def _tool_match(tool: str, pat: str) -> bool:
-    return fnmatch.fnmatch(tool, pat) or tool == pat
+    """Case-insensitively, as the profiles say and as `match` already was.
+
+    fnmatch is case-sensitive on POSIX, so `*fetch*` did not match `WebFetch` —
+    which silently killed the shipped allow-list example for the built-in fetch
+    tool, and would quietly mis-scope any rule someone wrote with a lowercase
+    wildcard. Wrong in the safe direction (an un-fired allow falls through to
+    ask), but wrong.
+    """
+    return fnmatch.fnmatch(tool.lower(), pat.lower()) or tool == pat
 
 
 def _glob(text: str, pat: str) -> bool:

@@ -157,6 +157,23 @@ def _tail_hash(f) -> str:
     return GENESIS
 
 
+_CTRL = {c: f"\\x{c:02x}" for c in range(0x20)}
+_CTRL[0x7f] = "\\x7f"
+
+
+def safe(text, limit: int = 0) -> str:
+    """Render an attacker-controlled string on one line, escapes disarmed.
+
+    Every `resource` and `reason` in this log came from the arguments of a call
+    somebody was trying to make. A newline inside one lets a crafted file path
+    print a second, entirely fabricated decision line in `airlock log`; an ANSI
+    escape lets it erase the real ones. Evidence you can typeset is not
+    evidence.
+    """
+    out = str(text if text is not None else "").translate(_CTRL)
+    return out[:limit] if limit else out
+
+
 _COLOR = {"allow": "\033[32m", "ask": "\033[33m", "block": "\033[31m",
           "flag": "\033[35m", "admit": "\033[36m", "change": "\033[35m",
           "hold": "\033[31m"}
@@ -172,9 +189,9 @@ def _stderr(effective: str, tool: str, reason: str, extra: str = "") -> None:
         return
     c = _COLOR.get(effective, "")
     tag = effective.upper().ljust(6)
-    line = f"{c}[airlock] {tag}{_RESET} {tool}  {reason}"
+    line = f"{c}[airlock] {tag}{_RESET} {safe(tool)}  {safe(reason)}"
     if extra:
-        line += f"  {extra}"
+        line += f"  {safe(extra)}"
     print(line, file=sys.stderr, flush=True)
 
 
@@ -204,7 +221,16 @@ def record(event: str, *, source: str, tool: str = "", server: str = "",
     }
     path = audit_path()
     _rotate_if_needed(path)
+    existed = path.exists()
     with open(path, "a+b") as f:
+        if not existed:
+            # Rotated segments were chmod 0600 while the live file — the one
+            # holding the freshest paths, hosts and commands — kept whatever
+            # the umask gave it, usually 0644.
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
         if fcntl:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         try:

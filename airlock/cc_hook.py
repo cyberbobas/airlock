@@ -104,5 +104,26 @@ def main() -> int:
     return EXIT_ALLOW
 
 
+def guarded() -> int:
+    """Any unexpected failure has to land on 2, not on a traceback.
+
+    Claude Code blocks on exit 2 and *continues* on every other non-zero code.
+    So an exception escaping main() — an unusable $AIRLOCK_HOME was the one
+    that found this — printed a stack trace and let the call through ungated.
+    A firewall that fails open when its own setup is broken is not one.
+    """
+    try:
+        return main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        if _flag("AIRLOCK_FAIL_OPEN"):
+            print(f"Airlock could not run ({e}); AIRLOCK_FAIL_OPEN=1, allowing.",
+                  file=sys.stderr)
+            return EXIT_ALLOW
+        return _deny(f"Airlock could not run ({type(e).__name__}: {e}). "
+                     f"Fix it, or set AIRLOCK_FAIL_OPEN=1 to run without a gate.")
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(guarded())

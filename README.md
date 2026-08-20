@@ -117,10 +117,10 @@ This is a security property, not an implementation detail:
 ## Overhead — measured, not assumed
 
 ```
-policy decision      p50   115 µs    p99   685 µs
-MCP call, direct     p50  0.064 ms   p99  0.079 ms
-MCP call, gated      p50  0.543 ms   p99  0.749 ms
-added by Airlock     p50  0.480 ms   p99  0.670 ms
+policy decision      p50   180 µs    p99  1025 µs
+MCP call, direct     p50  0.064 ms   p99  0.082 ms
+MCP call, gated      p50  0.605 ms   p99  0.692 ms
+added by Airlock     p50  0.540 ms   p99  0.610 ms
 peak RSS             27 MB
 ```
 
@@ -163,6 +163,12 @@ add indicators and raise a severity — it cannot delete one or lower a severity
 So a poisoned feed can make Airlock noisy; it cannot make it blind. (This was
 only half true before an audit: half the indicators live in the bundled feed,
 and an update that redefined them switched those detections off.)
+
+**A feed cannot make Airlock stall either.** Patterns run in-process on every
+gated call and Python's `re` cannot be interrupted, so `(a+)+$` in a feed meant
+a call that never got an answer and an agent that hung — worse than a wrong
+verdict. A pattern is now refused at install time if it nests an unbounded
+quantifier, or if timed probes in a killable child process do not finish.
 
 ## Rug pull: detected *and* held
 

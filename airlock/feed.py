@@ -47,6 +47,8 @@ import hmac
 import json
 import os
 import re
+import subprocess
+import sys
 import time
 import urllib.request
 from pathlib import Path
@@ -209,11 +211,13 @@ def update(src: str | None = None, *, timeout: float = 20.0,
     if new < cur:
         return False, f"feed version {new} is older than the installed {cur}"
 
-    bad = [str(p.get("id")) for p in data["patterns"]
-           if not isinstance(p, dict) or not _compiles(p.get("regex", ""))]
-    if bad:
-        return False, (f"feed contains {len(bad)} uncompilable pattern(s): "
-                       f"{', '.join(bad[:5])}")
+    for entry in data["patterns"]:
+        if not isinstance(entry, dict):
+            return False, "feed contains a pattern that is not an object"
+        ok_rx, why = _pattern_ok(str(entry.get("regex", "")))
+        if not ok_rx:
+            return False, (f"refusing to install: pattern "
+                           f"{entry.get('id', '(unnamed)')!r} {why}")
 
     p = feed_path()
     tmp = p.with_suffix(".json.tmp")
@@ -223,12 +227,135 @@ def update(src: str | None = None, *, timeout: float = 20.0,
                   f"{len(data.get('block_hosts') or [])} hosts) — {verdict}")
 
 
-def _compiles(rx: str) -> bool:
-    try:
-        re.compile(rx)
-        return True
-    except Exception:
+# A pattern from a feed runs on every gated call, in-process, with no way to
+# interrupt it: Python's `re` has no timeout. `(a+)+$` against forty a's and a
+# "!" backtracks for longer than anyone will wait, and the proxy answering that
+# call simply never answers — the agent hangs. So a feed that is merely
+# *installable* is not enough: a pattern has to be shown to terminate quickly
+# on inputs designed to make it not.
+_CANARIES = [
+    "a" * 40 + "!",
+    "ab" * 24 + "!",
+    "0" * 48 + "!",
+    ("x" * 8 + "/") * 8 + "!",
+    "https://" + "a" * 40 + "@" + "b" * 24 + "!",
+    " " * 48 + "!",
+]
+_CANARY_BUDGET = 2.0           # wall clock for one pattern's probes, in a child
+def _unbounded_after(rx: str, i: int) -> bool:
+    """Is the token at rx[i:] an unbounded quantifier (+, *, {n,})?"""
+    if i >= len(rx):
         return False
+    if rx[i] in "+*":
+        return True
+    return bool(re.match(r"\{\d*,\}", rx[i:]))
+
+
+def _variable_after(rx: str, i: int) -> bool:
+    """Any quantifier that is not a fixed `{n}` — one that leaves the matcher a
+    choice about how much to consume. `(a{1,3})+` is exponential for exactly
+    that reason, even though the inner bound is finite."""
+    if i >= len(rx):
+        return False
+    if rx[i] in "+*?":
+        return True
+    m = re.match(r"\{(\d*)(,?)(\d*)\}", rx[i:])
+    return bool(m and m.group(2))
+
+
+_GROUP_PREFIX = re.compile(r"^\?(?::|=|!|<=|<!|<[A-Za-z_]\w*>|P<[A-Za-z_]\w*>|[aiLmsux]*[:)])")
+
+
+def _body_has_unbounded(body: str) -> bool:
+    """Unbounded quantifier in this group body, ignoring escapes and classes.
+
+    `[A-Za-z0-9+/]` contains a literal `+` that quantifies nothing; counting it
+    would reject the bundled base64 indicator. The `?` in a `(?:...)` group is
+    a modifier, not a quantifier, so the prefix comes off first — otherwise
+    every non-capturing group in the feed looks exponential.
+    """
+    body = _GROUP_PREFIX.sub("", body)
+    i, in_class = 0, False
+    while i < len(body):
+        ch = body[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if in_class:
+            in_class = ch != "]"
+        elif ch == "[":
+            in_class = True
+        elif _variable_after(body, i):
+            return True
+        i += 1
+    return False
+
+
+def _nested_unbounded(rx: str) -> bool:
+    """An unbounded quantifier applied to a group that contains another one.
+
+    That is the shape that backtracks exponentially — `(a+)+`, `(([a-z])+.)+`.
+    A *fixed* inner repetition is fine: `(?:\\u00[0-9a-f]{2}){4,}` consumes
+    exactly six characters per round, so there is nothing to backtrack over.
+    """
+    stack, i, in_class = [], 0, False
+    while i < len(rx):
+        ch = rx[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if in_class:
+            in_class = ch != "]"
+        elif ch == "[":
+            in_class = True
+        elif ch == "(":
+            stack.append(i)
+        elif ch == ")" and stack:
+            start = stack.pop()
+            if _unbounded_after(rx, i + 1) and _body_has_unbounded(rx[start + 1:i]):
+                return True
+        i += 1
+    return False
+
+
+def _pattern_ok(rx: str) -> tuple[bool, str]:
+    """Return (acceptable, why not). Compiles, then times it under attack."""
+    if not rx:
+        return False, "has an empty regex"
+    try:
+        c = re.compile(rx, re.I)
+    except Exception as e:
+        return False, f"does not compile: {e}"
+    if _nested_unbounded(rx):
+        return False, ("nests a quantifier inside a quantified group, which can "
+                       "backtrack exponentially — rewrite it without the nesting")
+    return _time_it(rx)
+
+
+def _time_it(rx: str) -> tuple[bool, str]:
+    """Run the probes in a child process.
+
+    The syntactic check catches the classic shapes, but `re` cannot be
+    interrupted: a pattern it misses would wedge `airlock update` exactly the
+    way it would have wedged the gate. A child can be killed; this one is.
+    """
+    src = ("import re, sys, json\n"
+           "rx = json.loads(sys.stdin.read())\n"
+           "c = re.compile(rx, re.I)\n"
+           "for probe in %r:\n"
+           "    c.search(probe)\n" % (_CANARIES,))
+    try:
+        r = subprocess.run([sys.executable, "-c", src], input=json.dumps(rx),
+                           capture_output=True, text=True, timeout=_CANARY_BUDGET)
+    except subprocess.TimeoutExpired:
+        return False, (f"did not finish {len(_CANARIES)} short probes in "
+                       f"{_CANARY_BUDGET:g}s — a pattern this slow stalls every "
+                       f"gated call")
+    except Exception as e:
+        return False, f"could not be timed: {e}"
+    if r.returncode != 0:
+        return False, f"raised while matching: {(r.stderr or '').strip()[-120:]}"
+    return True, ""
 
 
 def status() -> str:

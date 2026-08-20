@@ -182,13 +182,13 @@ def cmd_log(a) -> int:
             r = json.loads(l)
         except Exception:
             continue
-        eff = r.get("effective") or r.get("decision") or r.get("event")
-        who = r.get("tool") or r.get("server") or "-"
-        res = r.get("resource") or r.get("detail") or ""
-        print(f"  {_C['d']}{r.get('ts','')[:19]}{_C['0']} "
+        eff = audit.safe(r.get("effective") or r.get("decision") or r.get("event"))
+        who = audit.safe(r.get("tool") or r.get("server") or "-", 34)
+        res = audit.safe(r.get("resource") or r.get("detail") or "", 40)
+        print(f"  {_C['d']}{audit.safe(r.get('ts',''), 19)}{_C['0']} "
               f"{tone.get(eff,'')}{eff.upper():6}{_C['0']} "
-              f"{_C['d']}{r.get('source','')[:4]:4}{_C['0']} {who:34} "
-              f"{r.get('reason','')[:60]:60} {_C['d']}{res[:40]}{_C['0']}")
+              f"{_C['d']}{audit.safe(r.get('source',''), 4):4}{_C['0']} {who:34} "
+              f"{audit.safe(r.get('reason',''), 60):60} {_C['d']}{res}{_C['0']}")
     return 0
 
 

@@ -136,11 +136,20 @@ def _line_of(text: str, pos: int) -> int:
     return text.count("\n", 0, pos) + 1
 
 
+# Bound the work a single scan can do. Feed patterns are checked for runaway
+# backtracking before they are installed, but bounded input is the second half
+# of that promise: whatever slips through still runs against a fixed ceiling
+# rather than against however much text an attacker can hand us.
+MAX_TEXT = 512_000
+
+
 def scan_text(text: str, *, all_hits: bool = False) -> list[dict]:
     """Return a list of flags. With all_hits, report every occurrence with its
     line number (used by the batch report); otherwise one flag per pattern."""
     if not text:
         return []
+    if len(text) > MAX_TEXT:
+        text = text[:MAX_TEXT]
     flags: list[dict] = []
     seen_ids: set[str] = set()
     for pid, sev, rx, _why in _active_patterns():
