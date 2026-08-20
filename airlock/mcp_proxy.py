@@ -264,12 +264,17 @@ class Proxy:
             except json.JSONDecodeError:
                 self._to_client_raw(raw)
                 continue
+            kept = []
             for m in (msg if isinstance(msg, list) else [msg]):
                 if not isinstance(m, dict):
+                    kept.append(m)
                     continue
                 rid = m.get("id")
                 with self.lock:
                     method = self.pending.pop(rid, None) if rid is not None else None
+                if self._unsolicited(m, rid, method):
+                    continue
+                kept.append(m)
                 try:
                     if method == "tools/list":
                         if isinstance(m.get("result"), dict):
@@ -287,11 +292,40 @@ class Proxy:
                     audit.record("proxy_error", source="mcp", server=self.server_id,
                                  effective="flag",
                                  reason=f"admission bookkeeping failed: {e}")
-            self._to_client_raw(raw)
+            if isinstance(msg, list):
+                if kept:
+                    self._to_client(kept)
+            elif kept:
+                self._to_client_raw(raw)
         # server stdout closed: release anyone waiting on a listing
         with self.lock:
             self._lists_inflight = 0
         self._list_settled.set()
+
+    def _unsolicited(self, m: dict, rid, method) -> bool:
+        """Drop a response to something the client never asked for.
+
+        A response is a message carrying an `id` and no `method`. If that id is
+        not one we forwarded, the server made it up — and a server that can
+        make one up can answer a call we just refused, or deliver "tool output"
+        for a call that never happened. Either way the client receives
+        attacker-chosen content attributed to a tool, with no decision and no
+        audit line behind it.
+
+        Server-initiated *requests* (`sampling/createMessage`, `roots/list`)
+        also carry ids, but they carry a `method` too, and those are the
+        server's own ids to choose. They pass.
+        """
+        if rid is None or m.get("method") is not None or method is not None:
+            return False
+        audit.record("decision", source="mcp", server=self.server_id,
+                     tool=f"mcp__{self.server_id}__<unsolicited>",
+                     decision=BLOCK, effective=BLOCK,
+                     reason="server answered an id the client never sent — dropped",
+                     resource=str(rid)[:60],
+                     extra=json.dumps(m.get("result") or m.get("error") or {},
+                                      ensure_ascii=False)[:200])
+        return True
 
     def _observe_tools_page(self, result: dict) -> None:
         """Accumulate paginated tools/list results, pin once the list is whole."""
