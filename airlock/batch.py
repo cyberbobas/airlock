@@ -69,7 +69,8 @@ class Report:
             "root": self.root,
             "files_scanned": self.files_scanned,
             "counts": self.counts(),
-            "risk": scan.risk_score([f.flag for f in self.findings]),
+            "risk": scan.risk_score([f.flag for f in self.findings],
+                                    [f.kind for f in self.findings]),
             "servers": self.servers,
             "findings": [{"path": f.path, "kind": f.kind, "subject": f.subject,
                           **f.flag} for f in self.findings],
@@ -129,6 +130,30 @@ def _walk(root: Path, errors: list[str] | None = None):
             yield Path(dirpath) / fn
 
 
+def _admission_state(server_id: str) -> str:
+    """What the runtime gate currently thinks of this server.
+
+    The static report and the running gate looked at the same servers and never
+    at each other: a scan could name a server the gate is holding, or one it has
+    never admitted, and say nothing about either.
+    """
+    try:
+        from . import pins
+        pin = pins.load().get(server_id)
+    except Exception:
+        return "unknown"
+    if not pin:
+        return "never seen by the gate"
+    if pin.get("held"):
+        pend = pin.get("pending") or {}
+        if pend.get("poisoned"):
+            return "HELD — descriptions scanned high"
+        if pend.get("rejected"):
+            return "HELD — reviewed and rejected"
+        return "HELD — toolset changed"
+    return f"pinned {(pin.get('pinned_at') or '')[:10]}"
+
+
 def _classify_file(p: Path) -> str | None:
     n = p.name.lower()
     if n in CONFIG_NAMES:
@@ -137,7 +162,11 @@ def _classify_file(p: Path) -> str | None:
                             "skill" in str(p.parent).lower()):
         return "skill"
     if p.suffix.lower() in DOC_SUFFIXES:
-        return "skill"
+        # Prose that mentions a secret path is not a skill telling an agent to
+        # read one. Still scanned and still reported — just not scored as an
+        # instruction, which is what made every security document look like an
+        # attack.
+        return "doc"
     if p.suffix.lower() in CODE_SUFFIXES:
         return "code"
     return None
@@ -172,6 +201,7 @@ def _scan_config(rep: Report, p: Path, text: str) -> None:
                     entry["notes"].append(f"passes env: {', '.join(sorted(keys)[:6])}")
             if not entry["behind_airlock"]:
                 entry["notes"].append("not wrapped by airlock-mcp — calls are ungated")
+            entry["admission"] = _admission_state(name)
             rep.servers.append(entry)
             for fl in scan.scan_text(line + "\n" + json.dumps(spec), all_hits=True):
                 rep.findings.append(Finding(rel, "mcp-server", name, fl))
@@ -237,7 +267,11 @@ def render(rep: Report, *, color: bool = True) -> str:
         for s in rep.servers:
             mark = f"{c['low']}gated{c['off']}" if s["behind_airlock"] else \
                    f"{c['med']}UNGATED{c['off']}"
+            state = s.get("admission", "")
+            tone = c["high"] if state.startswith("HELD") else c["dim"]
             out.append(f"  [{mark}] {c['cyan']}{s['name']}{c['off']}  {s['command'][:80]}")
+            if state:
+                out.append(f"      {tone}· {state}{c['off']}")
             for n in s["notes"]:
                 out.append(f"      {c['dim']}· {n}{c['off']}")
         out.append("")
@@ -259,7 +293,8 @@ def render(rep: Report, *, color: bool = True) -> str:
                     out.append(f"       {c['dim']}↳ {why}{c['off']}")
             out.append("")
 
-    risk = scan.risk_score([f.flag for f in rep.findings])
+    risk = scan.risk_score([f.flag for f in rep.findings],
+                           [f.kind for f in rep.findings])
     bar = "█" * (risk // 5) + "░" * (20 - risk // 5)
     tone = c["high"] if risk >= 50 else c["med"] if risk >= 20 else c["low"]
     out.append(f"  {tone}{bar}{c['off']}  risk {risk}/100   "

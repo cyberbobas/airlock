@@ -149,6 +149,22 @@ Reports injection / secret-access / exfil / stealth indicators with line
 numbers, enumerates every MCP server definition, and says which are **not**
 behind Airlock. Indicators are evidence for a human, never a verdict.
 
+The score is weighted by *where* a finding sits. An imperative in a `SKILL.md`
+is evidence; the same words in source, in a test, or in prose about these
+attacks are usually not. The top of the scale needs intent — text that
+overrides instructions or hides itself — or a credential named together with
+somewhere to send it. Everything found is still listed either way; only the
+number changes.
+
+Each MCP server in the report also carries what the runtime gate makes of it:
+pinned, never seen, or held.
+
+Airlock does **not** scan tool *output* to decide anything. Measured on ordinary
+content, these indicators fire constantly and legitimately: this project's own
+README, threat model and profiles each trip several high-severity ones. A gate
+that refused results on that basis would be unusable, and one that asked about
+them would be worse.
+
 ## Indicators that stay current
 
 Collector hosts and injection phrasings rot like antivirus signatures.
