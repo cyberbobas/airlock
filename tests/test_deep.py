@@ -348,6 +348,129 @@ for i in range(40):
     except ValueError as e:
         s.check("a malformed expiry is rejected at load", "expires" in str(e), str(e))
 
+    # === 5. a failing disk must not hang the agent ======================
+    # Was: pins.save and contracts._save let OSError escape. In the proxy that
+    # exception killed the server-to-client pump thread, so a full disk stopped
+    # the agent receiving responses at all — an outage caused by bookkeeping.
+    faulty = r"""
+import errno, os, sys
+_n = [0]
+def wrap(fn, name):
+    def inner(*a, **k):
+        _n[0] += 1
+        if _n[0] %% %d == 0:
+            raise OSError(errno.ENOSPC, "injected " + name)
+        return fn(*a, **k)
+    return inner
+for nm in ("write", "pwrite", "replace", "rename", "fsync", "ftruncate"):
+    if hasattr(os, nm):
+        setattr(os, nm, wrap(getattr(os, nm), nm))
+from airlock import audit, contracts, pins
+for i in range(30):
+    audit.record("decision", source="f", tool=f"t{i}", decision="allow",
+                 effective="allow", reason="fault run")
+    pins.check_toolset("s", [{"name": f"t{i}", "description": "d"}], [])
+    contracts.observe("s", "read_note", {"path": f"/data/f{i}"})
+print("SURVIVED")
+"""
+    for every in (3, 5, 11):
+        h = Path(tempfile.mkdtemp())
+        r = subprocess.run([sys.executable, "-c", faulty % every], env=_env(h),
+                           capture_output=True, text=True, timeout=60)
+        s.check(f"state writers swallow a failing disk (every {every} syscalls)",
+                "SURVIVED" in r.stdout and "Traceback" not in r.stderr,
+                r.stderr[-160:])
+        pf = h / "pins.json"
+        if pf.exists():
+            try:
+                json.loads(pf.read_text())
+                intact = True
+            except Exception:
+                intact = False
+            s.check(f"...and pins.json is never half-written (every {every})", intact)
+
+    # the whole proxy, with an unwritable home, must keep gating and keep answering
+    h = Path(tempfile.mkdtemp())
+    env = _env(h, AIRLOCK_MODE="enforce",
+               AIRLOCK_POLICY=str(ROOT / "tests" / "fixtures" / "policy.yaml"))
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "airlock.mcp_proxy", "--server-id", "d", "--",
+         sys.executable, str(ROOT / "examples" / "demo_server.py")],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        env=env, bufsize=0)
+
+    def rpc(i, method, params):
+        proc.stdin.write((json.dumps({"jsonrpc": "2.0", "id": i, "method": method,
+                                      "params": params}) + "\n").encode())
+        proc.stdin.flush()
+        line = proc.stdout.readline()
+        return json.loads(line) if line else None
+
+    try:
+        rpc(1, "initialize", {})
+        rpc(2, "tools/list", {})
+        os.chmod(h, 0o500)                       # the disk "fills up"
+        answered = sum(
+            1 for i in range(6)
+            if (rpc(100 + i, "tools/call",
+                    {"name": "read_note", "arguments": {"name": f"n{i}"}}) or {})
+        )
+        refused = rpc(200, "tools/call",
+                      {"name": "run_command",
+                       "arguments": {"command": "rm -rf / --no-preserve-root"}})
+    finally:
+        os.chmod(h, 0o700)
+        try:
+            proc.stdin.close()
+            proc.wait(timeout=15)
+            hung = False
+        except Exception:
+            proc.kill()
+            hung = True
+    s.check("the proxy keeps answering with an unwritable AIRLOCK_HOME",
+            answered == 6, answered)
+    s.check("...and still refuses a destructive call",
+            bool(refused and "error" in refused
+                 and "Airlock" in json.dumps(refused)), refused)
+    s.check("...and does not hang on shutdown", not hung)
+
+    # === 6. `pins reject` must not invent a hold ========================
+    # Was: reject set held=True unconditionally, so a mistyped server id
+    # blocked every call to a healthy server. And it discarded the pending
+    # entry, so the rejected toolset read as a fresh drift next time and a
+    # later `approve` found nothing to adopt.
+    from airlock import pins
+    h = Path(tempfile.mkdtemp())
+    saved = dict(os.environ)
+    os.environ["AIRLOCK_HOME"] = str(h)
+    try:
+        A = [{"name": "read_note", "description": "v1"}]
+        B = [{"name": "read_note", "description": "v2 CHANGED"}]
+        pins.check_toolset("s", A, [])
+        msg = pins.reject("s")
+        s.check("rejecting a server with nothing pending is a no-op",
+                not pins.is_held("s")[0] and "nothing to reject" in msg, msg)
+
+        s.check("a drift is held", pins.check_toolset("s", B, [])[0] == "changed"
+                and pins.is_held("s")[0])
+        pins.reject("s")
+        s.check("a rejection keeps the hold", pins.is_held("s")[0])
+        s.check("...and says it was rejected, not merely changed",
+                "REJECTED" in pins.is_held("s")[1], pins.is_held("s")[1])
+        s.check("re-offering the rejected toolset stays held, not a fresh drift",
+                pins.check_toolset("s", B, [])[0] == "held")
+        s.check("reverting to the pinned toolset clears the hold",
+                pins.check_toolset("s", A, [])[0] == "unchanged"
+                and not pins.is_held("s")[0])
+        pins.check_toolset("s", B, [])
+        pins.reject("s")
+        out = pins.approve("s")
+        s.check("approve can still override a rejection",
+                not pins.is_held("s")[0] and "re-pinned" in out, out)
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
     return s.report()
 
 

@@ -74,13 +74,27 @@ def load() -> dict:
     return {}
 
 
-def save(data: dict) -> None:
-    """Atomic replace — a crash mid-write must not leave an empty pin file
-    (an empty pin file silently re-TOFUs every server)."""
+def save(data: dict) -> bool:
+    """Atomic replace. Returns False if the store could not be written.
+
+    A crash mid-write must not leave an empty pin file — an empty pin file
+    silently re-TOFUs every server. A FULL DISK must not raise either: this is
+    called from the proxy's server pump, where an exception killed the thread
+    and the agent simply stopped receiving responses. A disk problem should
+    degrade rug-pull detection, not hang the tool.
+    """
     p = _pins_path()
     tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False))
-    os.replace(tmp, p)
+    try:
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+        os.replace(tmp, p)
+        return True
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False
 
 
 def _now() -> str:
@@ -99,7 +113,7 @@ def check_toolset(server_id: str, tools: list[dict], flags: list[dict]):
             pin = {"hash": h, "tools": names, "flagged": bool(flags),
                    "pinned_at": _now(), "held": False}
             data[server_id] = pin
-            save(data)
+            pin["persisted"] = save(data)
             return "new", pin
 
         if prev.get("hash") == h:
@@ -108,7 +122,7 @@ def check_toolset(server_id: str, tools: list[dict], flags: list[dict]):
             if prev.get("held"):
                 prev["held"] = False
                 prev.pop("pending", None)
-                save(data)
+                prev["persisted"] = save(data)
             return "unchanged", prev
 
         if prev.get("held") and (prev.get("pending") or {}).get("hash") == h:
@@ -120,7 +134,7 @@ def check_toolset(server_id: str, tools: list[dict], flags: list[dict]):
         prev["pending"] = {"hash": h, "tools": names, "flagged": bool(flags),
                            "seen_at": _now()}
         prev["held"] = True
-        save(data)
+        prev["persisted"] = save(data)
         return "changed", prev
 
 
@@ -131,6 +145,10 @@ def is_held(server_id: str) -> tuple[bool, str]:
     pend = pin.get("pending") or {}
     added = sorted(set(pend.get("tools") or []) - set(pin.get("tools") or []))
     detail = f" new tools: {', '.join(added)}" if added else ""
+    if pend.get("rejected"):
+        return True, (f"toolset was reviewed and REJECTED — calls stay blocked "
+                      f"until the server reverts, or you override with "
+                      f"`airlock pins approve {server_id}`.{detail}")
     return True, (f"toolset changed since it was pinned — held pending review "
                   f"(airlock pins approve {server_id}).{detail}")
 
@@ -143,15 +161,19 @@ def approve(server_id: str) -> str:
             return f"no pin for '{server_id}'"
         pend = pin.pop("pending", None)
         if not pend:
+            if not pin.get("held"):
+                return f"'{server_id}' was not held"
             pin["held"] = False
-            save(data)
-            return f"'{server_id}' was not held"
+            if not save(data):
+                return f"could not write the pin store — '{server_id}' is unchanged"
+            return f"'{server_id}' released (there was no pending toolset to adopt)"
         pin["hash"] = pend["hash"]
         pin["tools"] = pend["tools"]
         pin["flagged"] = pend.get("flagged", False)
         pin["held"] = False
         pin["pinned_at"] = _now()
-        save(data)
+        if not save(data):
+            return f"could not write the pin store — '{server_id}' is unchanged"
         return f"'{server_id}' re-pinned to the new toolset ({len(pin['tools'])} tools)"
 
 
@@ -161,9 +183,22 @@ def reject(server_id: str) -> str:
         pin = data.get(server_id)
         if not pin:
             return f"no pin for '{server_id}'"
-        pin.pop("pending", None)
+        pend = pin.get("pending")
+        if not pend:
+            # Nothing was pending, so there is nothing to reject. Holding anyway
+            # turned a mistyped server id into a self-inflicted outage: every
+            # call to a perfectly healthy server refused until it happened to
+            # advertise its toolset again.
+            return f"'{server_id}' has no pending change — nothing to reject"
+        # Keep the rejected toolset on record. Discarding it lost the memory of
+        # WHAT was refused: the server offering the same set again read as a
+        # fresh drift, and `approve` afterwards found nothing to adopt and
+        # quietly un-held the server instead. A rejection has to be remembered
+        # to mean anything.
+        pend["rejected"] = True
         pin["held"] = True          # stays held: the server still ships the new set
-        save(data)
+        if not save(data):
+            return f"could not write the pin store — '{server_id}' is unchanged"
         return f"'{server_id}' rejected — calls stay blocked until it reverts or you approve"
 
 
@@ -172,5 +207,6 @@ def forget(server_id: str) -> str:
         data = load()
         if data.pop(server_id, None) is None:
             return f"no pin for '{server_id}'"
-        save(data)
+        if not save(data):
+            return f"could not write the pin store — '{server_id}' is unchanged"
         return f"'{server_id}' unpinned (next run re-TOFUs it)"

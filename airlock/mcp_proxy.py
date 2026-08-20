@@ -270,13 +270,23 @@ class Proxy:
                 rid = m.get("id")
                 with self.lock:
                     method = self.pending.pop(rid, None) if rid is not None else None
-                if method == "tools/list":
-                    if isinstance(m.get("result"), dict):
-                        self._observe_tools_page(m["result"])
+                try:
+                    if method == "tools/list":
+                        if isinstance(m.get("result"), dict):
+                            self._observe_tools_page(m["result"])
+                        self._list_done()
+                    elif m.get("method") == "notifications/tools/list_changed":
+                        # server announces a new toolset: force a re-pin next list
+                        self._tool_pages = []
+                except Exception as e:
+                    # Admission bookkeeping (pinning, scanning, contracts) must
+                    # not be able to kill this thread. It did: one OSError from
+                    # a full disk stopped the pump, and the agent then waited
+                    # forever for responses that were never going to be relayed.
                     self._list_done()
-                elif m.get("method") == "notifications/tools/list_changed":
-                    # server announces a new toolset: force a re-pin next list
-                    self._tool_pages = []
+                    audit.record("proxy_error", source="mcp", server=self.server_id,
+                                 effective="flag",
+                                 reason=f"admission bookkeeping failed: {e}")
             self._to_client_raw(raw)
         # server stdout closed: release anyone waiting on a listing
         with self.lock:
@@ -303,6 +313,13 @@ class Proxy:
             audit.record("toolset_admitted", source="mcp", server=self.server_id,
                          effective="admit", reason=f"{len(tools)} tools pinned",
                          flags=flags, extra=names)
+        if _pin and _pin.get("persisted") is False:
+            # Losing the pin means the next session re-TOFUs this server, so
+            # rug-pull detection is off until the store is writable again.
+            audit.record("pin_unwritable", source="mcp", server=self.server_id,
+                         effective="flag",
+                         reason="could not write the pin store — rug-pull "
+                                "detection is degraded for this server")
         elif status == "changed":
             audit.record("toolset_changed", source="mcp", server=self.server_id,
                          effective="hold",

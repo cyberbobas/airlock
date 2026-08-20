@@ -193,11 +193,27 @@ def cmd_log(a) -> int:
 
 
 def cmd_verify(a) -> int:
+    """Exit 0 fully verified, 1 chain broken, 2 verified but incomplete.
+
+    The third state is real and worth its own code: a log whose tail checkpoint
+    is missing verifies as far as it goes, but nothing proves records were not
+    removed from the end — and a cron job checking only for zero would call that
+    a pass.
+    """
     ok, n, msg = audit.verify(all_segments=True)
-    tone = _C["l"] if ok else _C["h"]
-    print(f"\n  {tone}{'CHAIN INTACT' if ok else 'CHAIN BROKEN'}{_C['0']}  {msg}")
+    incomplete = ok and "no tail checkpoint" in msg
+    if not ok:
+        label, tone = "CHAIN BROKEN", _C["h"]
+    elif incomplete:
+        label, tone = "CHAIN INCOMPLETE", _C["m"]
+    else:
+        label, tone = "CHAIN INTACT", _C["l"]
+    print(f"\n  {tone}{label}{_C['0']}  {msg.split(' (no tail')[0]}")
+    if incomplete:
+        print(f"  {_C['m']}!{_C['0']} audit.head is missing — records removed from "
+              f"the end of the log would not be detected.")
     print(f"  {_C['d']}{audit.audit_path()}{_C['0']}\n")
-    return 0 if ok else 1
+    return 0 if ok and not incomplete else (2 if incomplete else 1)
 
 
 def cmd_doctor(a) -> int:

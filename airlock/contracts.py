@@ -87,13 +87,28 @@ def _load() -> dict:
     return data
 
 
-def _save(data: dict) -> None:
+def _save(data: dict) -> bool:
+    """Atomic replace; False when it could not be written.
+
+    Contracts are bookkeeping — a proposal and a learned footprint. Letting a
+    full disk raise from here killed the proxy's pump thread and, in observe
+    mode, turned every call into a fail-closed refusal. Neither is a proportionate
+    response to being unable to save a suggestion.
+    """
     global _cache
     _cache = None
     p = _path()
     tmp = p.with_suffix(".yaml.tmp")
-    tmp.write_text(yaml.safe_dump(data, sort_keys=True, allow_unicode=True))
-    os.replace(tmp, p)
+    try:
+        tmp.write_text(yaml.safe_dump(data, sort_keys=True, allow_unicode=True))
+        os.replace(tmp, p)
+        return True
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False
 
 
 # ---- resource classification ------------------------------------------

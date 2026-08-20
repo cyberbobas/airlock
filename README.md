@@ -124,8 +124,8 @@ added by Airlock     p50  0.665 ms   p99  0.850 ms
 peak RSS             27 MB
 ```
 
-Sustained: 4 000 gated calls at ~900/s with flat memory (29 MB) and no
-descriptor growth. Python 3.14, Linux; also verified on 3.13. Reproduce with
+Sustained: 50 000 gated calls at ~1 200/s across 45 log rotations, with memory
+flat to within 32 KB and no descriptor growth. Python 3.14, Linux; also verified on 3.13. Reproduce with
 `airlock bench`. For scale: one model turn is
 hundreds of milliseconds at best. The gate is not where your agent spends time.
 
@@ -214,14 +214,16 @@ so the target cannot be hidden in a second argument.
 
 ```bash
 airlock log -n 40                 # recent decisions with their concrete targets
-airlock verify                    # chain intact, or the exact line where it broke
+airlock verify                    # exit 0 intact · 1 broken · 2 tail unprovable
 airlock export --format cef       # into ArcSight / Splunk
 airlock export --format syslog    # RFC5424
 airlock report --markdown         # the page you send your manager
 ```
 
-Every record carries `prev` + `h`. Editing or deleting any past line breaks
-every digest after it. The chain **continues across rotations** — a new segment
+Every record carries `prev` + `h`, and every write updates a tail checkpoint.
+Editing or deleting any past line breaks every digest after it; removing records
+from the *end* — where someone covering their tracks would cut — no longer
+verifies as intact. The chain **continues across rotations** — a new segment
 starts from the previous one's last digest — and every rotation is written to
 `audit.chain`, so deleting or truncating a whole segment is reported too:
 

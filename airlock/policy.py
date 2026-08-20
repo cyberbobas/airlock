@@ -100,6 +100,11 @@ class Policy:
     path: Path | None = None
     source: str = ""
     profile: str = ""
+    # Which rules can apply to a given tool name, memoised. The tool does not
+    # change while the deny sweep walks hundreds of strings, but the tool glob
+    # was being re-evaluated for every rule on every one of them — 636 fnmatch
+    # calls per decision, most of them answering the same question again.
+    _tool_index: dict = field(default_factory=dict, repr=False, compare=False)
     # A repository's own .airlock/policy.yaml. Consulted for every decision,
     # but only ever to make one stricter — see resolve().
     overlay: "Policy | None" = None
@@ -222,6 +227,16 @@ class Policy:
         if self.overlay is None:
             return d
         o = self.overlay._decide_own(tool, args)
+        # Only what the overlay says ON PURPOSE tightens: a rule it wrote, or a
+        # refusal to read an oversized payload. Its *default* must not, because
+        # the natural way to write an overlay is a couple of extra rules and
+        # nothing else — and letting that default win reclassified every
+        # ordinary call as `ask`. Under `paranoid` that is `block`, so adding
+        # one rule to a repo stopped the agent reading its own source. A repo
+        # that genuinely wants default-deny sets `default:`, which resolve()
+        # already merges into the machine policy.
+        if o.rule is None and o.action != BLOCK:
+            return d
         if RANK[o.action] > RANK[d.action]:
             return Decision(o.action, f"{o.reason} [project policy]", o.rule)
         return d
@@ -277,17 +292,33 @@ class Policy:
             return Decision(ALLOW, f"grant: {who}", -(i + 1))
         return None
 
+    def _rules_for(self, tool: str) -> tuple[list, list]:
+        """(all applicable rules, block-only subset) for this tool name."""
+        hit = self._tool_index.get(tool)
+        if hit is None:
+            every, blocks = [], []
+            for i, r in enumerate(self.rules):
+                if not isinstance(r, dict):
+                    continue
+                if not _tool_match(tool, str(r.get("tool", "*"))):
+                    continue
+                action = r.get("action", ASK)
+                entry = (i, action, _prepare(r.get("match")),
+                         r.get("reason", "matched rule"))
+                every.append(entry)
+                if action == BLOCK:
+                    blocks.append(entry)
+            hit = (every, blocks)
+            if len(self._tool_index) < 1024:   # bounded: tool names are attacker-set
+                self._tool_index[tool] = hit
+        return hit
+
     def _match(self, tool: str, text: str, block_only: bool = False):
-        for i, r in enumerate(self.rules):
-            action = r.get("action", ASK)
-            if block_only and action != BLOCK:
+        every, blocks = self._rules_for(tool)
+        for i, action, matcher, reason in (blocks if block_only else every):
+            if matcher is not None and not matcher(text):
                 continue
-            if not _tool_match(tool, r.get("tool", "*")):
-                continue
-            m = r.get("match")
-            if m is not None and not _glob(text, str(m).lower()):
-                continue
-            return Decision(action=action, reason=r.get("reason", "matched rule"), rule=i)
+            return Decision(action=action, reason=reason, rule=i)
         return None if block_only else Decision(self.default, "default policy", None)
 
     # ---- posture --------------------------------------------------------
@@ -375,6 +406,27 @@ def _tool_match(tool: str, pat: str) -> bool:
     ask), but wrong.
     """
     return fnmatch.fnmatch(tool.lower(), pat.lower()) or tool == pat
+
+
+def _prepare(pat):
+    """Compile a rule's `match` into a callable, once per rule per tool.
+
+    Most patterns are `*literal*`, and a substring test beats a compiled regex
+    by a wide margin on the long strings this runs against — a 4 KB `content`
+    argument cost 1.4 ms a decision, nearly all of it regex over text that a
+    single `in` answers. Semantics are unchanged: this is the same rule
+    `_glob` applies, decided once instead of on every call.
+    """
+    if pat is None:
+        return None
+    p = str(pat).lower()
+    core = p.strip("*")
+    if not any(c in p for c in "*?[]"):
+        return lambda text, c=p: c in text
+    if p.startswith("*") and p.endswith("*") and not any(c in core for c in "*?[]"):
+        return lambda text, c=core: c in text
+    rx = fnmatch._compile_pattern(p)
+    return lambda text, r=rx: r(text) is not None
 
 
 def _glob(text: str, pat: str) -> bool:

@@ -97,6 +97,17 @@ path past every rule on a default install.
 Standing regressions now include the concurrency and budget cases:
 `tests/test_deep.py`.
 
+## Fifth deep round ✅
+
+Six more rounds: the newest code under adversarial load, byte-level protocol
+fuzzing, audit forgery, syscall fault injection, model-based state testing, and
+a 50 000-call soak. Five defects (table in `THREATMODEL.md`) plus a 10x on the
+hot path, proven behaviour-preserving before it was kept.
+
+Standing suites: `tests/test_audit.py` for the integrity story on its own,
+`tests/test_deep.py` for robustness, overlay and matcher checks in
+`tests/test_policy.py`.
+
 ## Now — what to build next
 
 | priority | item | why |

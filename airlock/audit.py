@@ -305,7 +305,95 @@ def _write_record(path: Path, rec: dict, effective: str, decision: str) -> None:
                                       and (effective or decision) in _CRITICAL):
                 os.fsync(f.fileno())
         except OSError:
-            pass          # an unwritable log must not stop the enforcement
+            return        # an unwritable log must not stop the enforcement
+    # Continue from our own last checkpoint when this process wrote it and the
+    # chain has not moved underneath us; otherwise another writer was here and
+    # the file is the only truth.
+    prior = _head_cache
+    if not (prior and prior.get("last") == rec.get("prev")):
+        prior = read_head() or {}
+    _write_head(int(prior.get("count", 0)) + 1, rec["h"])
+
+
+def head_path() -> Path:
+    return home() / "audit.head"
+
+
+def read_head() -> dict | None:
+    """The last checkpoint: how many records exist and what the final digest is."""
+    p = head_path()
+    if not p.exists():
+        return None
+    try:
+        d = json.loads(p.read_text(encoding="utf-8").strip() or "{}")
+        return d if isinstance(d, dict) and "last" in d else None
+    except Exception:
+        return None
+
+
+_head_cache: dict | None = None
+_head_fd: tuple[str, int] | None = None      # (path, fd), reused under the lock
+
+
+def _write_head(count: int, last: str) -> None:
+    """Checkpoint the tail after every record.
+
+    The chain proves no record was EDITED. It says nothing about records that
+    were DELETED FROM THE END — and the end is exactly where someone covering
+    their tracks would cut, because that is where their own decisions are. The
+    ledger only ever covered rotated segments, so truncating the live file was
+    invisible: `verify` reported an intact chain over a log with the last five
+    minutes removed.
+
+    One small atomic write per record, no fsync: cheap next to the append it
+    accompanies, and it turns tail truncation into a mismatch someone can see.
+    """
+    h = {"count": count, "last": last, "at": _now()}
+    alg = signing.mode()
+    if alg != signing.ALG_NONE:
+        sig = signing.sign(f"{count}:{last}")
+        if sig:
+            h["alg"], h["sig"] = alg, sig
+    global _head_cache
+    try:
+        p = head_path()
+        blob = (json.dumps(h, ensure_ascii=False) + "\n").encode("utf-8")
+        # Written in place rather than through a temp file and rename. A torn
+        # write reads back as unparseable, which `read_head` reports as *no*
+        # checkpoint — "the tail cannot be proven", the safe direction — so the
+        # rename buys nothing and costs three syscalls on every single decision.
+        # Reuse the descriptor across records. We only ever get here holding
+        # the append lock, so there is no interleaving to worry about, and the
+        # open/close pair was the whole remaining cost of checkpointing.
+        global _head_fd
+        key = str(p)
+        if _head_fd is None or _head_fd[0] != key:
+            if _head_fd is not None:
+                try:
+                    os.close(_head_fd[1])
+                except OSError:
+                    pass
+            _head_fd = (key, os.open(p, os.O_WRONLY | os.O_CREAT, 0o600))
+        fd = _head_fd[1]
+        os.ftruncate(fd, 0)
+        os.pwrite(fd, blob, 0)
+        _head_cache = h
+    except OSError:
+        _head_cache = None    # a checkpoint we cannot write must not stop a decision
+        if _head_fd is not None:
+            try:
+                os.close(_head_fd[1])
+            except OSError:
+                pass
+            _head_fd = None
+
+
+def head_ok(head: dict) -> bool:
+    """Was this checkpoint written by someone holding the signing key?"""
+    if not head.get("sig"):
+        return signing.mode() == signing.ALG_NONE
+    return signing.verify_one(f"{head.get('count')}:{head.get('last')}",
+                              head["sig"], head.get("alg", ""))
 
 
 def ledger_path() -> Path:
@@ -609,15 +697,41 @@ def verify(path: Path | None = None, *, all_segments: bool = False
                     f"rotation ledger no longer lists (entry {digest}) — "
                     f"audit.chain was truncated, pruned or deleted")
 
+    # The tail checkpoint: the chain cannot speak for records removed from the
+    # end, so compare against what the last write recorded.
+    head = read_head()
+    tail_note = ""
+    if head is not None:
+        if not head_ok(head):
+            return False, n, ("the tail checkpoint (audit.head) does not verify "
+                              "against the signing key — it was rewritten")
+        want_n, want_last = int(head.get("count", 0)), head.get("last")
+        if n < want_n or (want_last and prev != want_last):
+            return False, n, (
+                f"the log was truncated: the last write recorded {want_n} records "
+                f"ending {want_last}, the file has {n} ending {prev}")
+    elif n:
+        tail_note = " (no tail checkpoint — records removed from the end of the "
+        tail_note += "file would not be detected; audit.head is missing)"
+
     msg = f"chain intact across {n} records"
     if len(files) > 1:
         msg += f" in {len(files)} segments"
     if badsig:
         return False, n, f"{msg}, but {badsig} signature(s) do not verify"
+    # Unsigned records while signing is configured are a failure, not a note.
+    # Otherwise the downgrade is free: delete the checkpoint, strip every
+    # signature, rewrite the history, recompute the chain — and a log that
+    # tolerates unsigned records calls the result intact. A log that genuinely
+    # predates signing gets the same verdict, and the fix for it is to rotate,
+    # which is what an operator turning signing on should do anyway.
+    if unsigned and signing.mode() != signing.ALG_NONE:
+        return False, n, (
+            f"{msg}, but {unsigned} of them carry no signature while signing is "
+            f"on — either they predate it (rotate the log) or the signatures "
+            f"were stripped")
     if unsigned and unsigned < n:
         msg += f" ({n - unsigned} signed, {unsigned} unsigned)"
-    elif unsigned == n and signing.mode() != signing.ALG_NONE:
-        msg += " (unsigned — signing was enabled after these were written)"
     elif not unsigned and n:
         msg += " (all signed)"
-    return True, n, msg
+    return True, n, msg + tail_note

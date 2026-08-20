@@ -92,6 +92,28 @@ that survives repeated `SIGKILL` mid-write, 4 000 calls at ~900/s with flat
 memory and no descriptor leak, and identical behaviour installed as a wheel,
 an sdist, editable, via `uv tool` and via `pipx`, on Python 3.13 and 3.14.
 
+## Defects found by the fifth deep round
+
+Rounds aimed at what a feature suite structurally cannot reach: the newest code
+under adversarial load, the MCP stream at byte level, forging the audit rather
+than corrupting it, syscalls failing mid-write, and random command sequences
+against a reference state machine.
+
+| defect | why it mattered | fix |
+|---|---|---|
+| The project overlay's *default* tightened every decision | the natural way to write an overlay is a couple of extra rules and nothing else — and that reclassified every ordinary call as `ask`, which under `paranoid` is a refusal. Adding one rule to a repo stopped the agent reading its own source | only what the overlay says on purpose tightens: a rule it wrote, or its refusal of an oversized payload. A repo wanting default-deny still sets `default:`, which is merged at load |
+| Tail truncation was invisible | the ledger only covered rotated segments, so deleting the last lines of the live file — exactly where someone covering their tracks cuts — verified as an intact chain | every record updates a signed tail checkpoint; removing even one record is now a mismatch, and `airlock verify` has a third exit code for "verified but the checkpoint is missing" |
+| Unsigned records were tolerated while signing was on | the downgrade was free: delete the checkpoint, strip every signature, rewrite history, recompute the chain — and the log called itself intact | unsigned records fail verification when signing is configured |
+| A failing disk killed the proxy's pump thread | `pins.save` and `contracts._save` let `OSError` escape into the server-to-client pump, so a full disk stopped the agent receiving responses at all. An outage caused by bookkeeping | persistence failures are returned, not raised; the pump cannot be killed by admission bookkeeping; a pin that could not be written is logged as degraded rug-pull detection |
+| `pins reject` invented a hold | rejecting a server with nothing pending set `held=True`, so a mistyped server id blocked every call to a healthy server. It also discarded the pending entry, so the rejected toolset read as a fresh drift and a later `approve` found nothing to adopt | rejecting nothing is a no-op; a rejection is remembered, keeps the hold, reports itself as rejected, and `approve` can still override it |
+
+Also from this round, not a defect but worth recording: the rule matcher was
+re-globbing the tool name once per rule per string. Hoisting that and compiling
+each `match` once took a decision from 250 µs to 22 µs and the per-call proxy
+overhead from 0.66 ms to 0.47 ms. The change was proven behaviour-preserving
+against the old matcher over 317 patterns × 48 texts and 4 000 random decisions
+before it was kept.
+
 ## Matching is by string, not by resolved identity
 
 Two limits worth stating plainly, because both are reachable:
