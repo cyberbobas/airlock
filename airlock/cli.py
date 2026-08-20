@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pathlib
 import subprocess
 import sys
 from pathlib import Path
@@ -243,7 +244,17 @@ def cmd_doctor(a) -> int:
     except Exception as e:
         rows.append(("bad", f"policy {pol_path} does not load: {e}"))
         pol = None
-    rows.append(("ok", f"workspace: {config.workspace()}"))
+    ws = config.workspace()
+    try:
+        at_home = ws == pathlib.Path.home().resolve()
+    except (OSError, RuntimeError):
+        at_home = False
+    if at_home:
+        rows.append(("warn", f"workspace: {ws} — that is your home directory, so "
+                             f"every `${{workspace}}` rule covers all of it. Run the "
+                             f"agent from the project, or set AIRLOCK_WORKSPACE."))
+    else:
+        rows.append(("ok", f"workspace: {ws}"))
 
     h = audit.home()
     rows.append(("ok", f"airlock home: {h}"))

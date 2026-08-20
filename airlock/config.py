@@ -10,7 +10,6 @@ Three resolution jobs, all of which the first prototype got wrong by hardcoding:
 from __future__ import annotations
 import os
 import re
-import subprocess
 from pathlib import Path
 
 PKG = Path(__file__).resolve().parent
@@ -51,24 +50,58 @@ def write_atomic(path: Path, text: str) -> None:
     os.replace(tmp, target)
 
 
+_WORKSPACE: dict = {}
+
+
 def workspace() -> Path:
     """The project the agent is operating on.
 
     AIRLOCK_WORKSPACE wins; otherwise the enclosing git repo; otherwise cwd.
     An MCP server is launched with the project as cwd, so this is usually right
     without anyone configuring it.
+
+    Found by walking up for a `.git`, NOT by running `git`. Shelling out meant
+    the gate executed a binary resolved through the agent's own PATH on every
+    single decision — and a `git` that answered `rev-parse` with a directory of
+    its choosing moved `${workspace}`, turning a scoped allow rule into a wide
+    one. A firewall must not run the caller's code to work out what the caller
+    is allowed to do.
+
+    A repository whose root is $HOME or / is not a project. A dotfiles repo at
+    $HOME would otherwise make `${workspace}/*` mean the whole home directory,
+    and `git init ~` is a command an agent can run.
     """
+    # Cached on what it depends on, not globally: a long-lived process that
+    # changes directory — or a test that moves between fixtures — must get the
+    # answer for where it is now, not where it started.
+    try:
+        key = (os.environ.get("AIRLOCK_WORKSPACE", ""), os.getcwd())
+    except OSError:
+        key = (os.environ.get("AIRLOCK_WORKSPACE", ""), "")
+    if key not in _WORKSPACE:
+        _WORKSPACE.clear()
+        _WORKSPACE[key] = _find_workspace()
+    return _WORKSPACE[key]
+
+
+def _find_workspace() -> Path:
     env = os.environ.get("AIRLOCK_WORKSPACE")
     if env:
         return Path(env).expanduser().resolve()
     try:
-        out = subprocess.run(["git", "rev-parse", "--show-toplevel"],
-                             capture_output=True, text=True, timeout=2)
-        if out.returncode == 0 and out.stdout.strip():
-            return Path(out.stdout.strip()).resolve()
-    except Exception:
-        pass
-    return Path.cwd().resolve()
+        cwd = Path.cwd().resolve()
+    except OSError:            # the working directory was deleted under us
+        return Path(os.environ.get("TMPDIR", "/tmp")).resolve()
+    try:
+        stop = {Path.home().resolve(), Path("/")}
+    except (OSError, RuntimeError):
+        stop = {Path("/")}
+    for d in (cwd, *cwd.parents):
+        if d in stop:
+            break
+        if (d / ".git").exists():
+            return d
+    return cwd
 
 
 def user_policy() -> Path:

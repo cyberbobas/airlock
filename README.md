@@ -129,6 +129,10 @@ flat to within 32 KB and no descriptor growth. Python 3.14, Linux; also verified
 `airlock bench`. For scale: one model turn is
 hundreds of milliseconds at best. The gate is not where your agent spends time.
 
+Those are the proxy's numbers, measured in-process. The Claude Code hook is a
+separate process per call, so it costs what starting Python costs — about 75 ms,
+nearly all of it interpreter startup rather than anything Airlock does.
+
 Audit durability is tunable: `AIRLOCK_AUDIT_FSYNC=critical` (default) fsyncs
 blocks and asks but not the routine allow flood; `always` for compliance.
 

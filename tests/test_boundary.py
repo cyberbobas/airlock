@@ -149,10 +149,80 @@ def _outcome_loop(s):
     s.check("uninstall removes both", not left, left)
 
 
+def _workspace_boundary(s):
+    """`${workspace}` is a policy variable whose value the agent can influence."""
+    import importlib
+    from airlock import config as _cfg
+
+    home = pathlib.Path(tempfile.mkdtemp(prefix="bd-ws-"))
+    (home / "proj").mkdir()
+    (home / "proj" / ".git").mkdir()
+    (home / "secrets").mkdir()
+    (home / "bin").mkdir()
+
+    def ws(cwd, path_prefix=""):
+        code = ("import os,sys;sys.path.insert(0,%r);"
+                "from airlock import config;print(config.workspace())" % str(ROOT))
+        env = dict(os.environ, HOME=str(home))
+        env.pop("AIRLOCK_WORKSPACE", None)
+        if path_prefix:
+            env["PATH"] = f"{path_prefix}:{env['PATH']}"
+        r = subprocess.run([sys.executable, "-c", code], cwd=str(cwd),
+                           capture_output=True, text=True, env=env)
+        return r.stdout.strip()
+
+    s.check("a repo is found by walking up, from inside it",
+            ws(home / "proj") == str(home / "proj"), ws(home / "proj"))
+
+    # A `git` on PATH that answers rev-parse with a directory of its choosing
+    # used to move ${workspace} — and shelling out at all meant the gate ran a
+    # binary the caller may control, on every decision.
+    fake = home / "bin" / "git"
+    fake.write_text('#!/bin/sh\n'
+                    'echo called >> "$AIRLOCK_TEST_GIT_LOG"\n'
+                    f'[ "$1" = "rev-parse" ] && {{ echo "{home}"; exit 0; }}\n'
+                    'exec /usr/bin/git "$@"\n')
+    fake.chmod(0o755)
+    log = home / "git.log"
+    log.write_text("")
+    os.environ["AIRLOCK_TEST_GIT_LOG"] = str(log)
+    try:
+        got = ws(home / "proj", path_prefix=str(home / "bin"))
+    finally:
+        os.environ.pop("AIRLOCK_TEST_GIT_LOG", None)
+    s.check("a hostile `git` on PATH cannot move the workspace",
+            got == str(home / "proj"), got)
+    s.check("...because the gate never runs `git` at all",
+            log.read_text() == "", log.read_text()[:60])
+
+    # `git init ~` is a command an agent can run. A repo whose root is the home
+    # directory is not a project, and treating it as one would turn every
+    # ${workspace} rule into a home-wide one.
+    (home / ".git").mkdir()
+    s.check("a repo at $HOME is not treated as the project",
+            ws(home / "proj") == str(home / "proj"), ws(home / "proj"))
+    nested = home / "proj" / "vendor" / "dep"
+    nested.mkdir(parents=True)
+    (nested / ".git").mkdir()
+    s.check("the nearest enclosing repo wins", ws(nested) == str(nested), ws(nested))
+
+    # ...and when cwd genuinely is the home directory, say so rather than
+    # quietly scoping every allow rule to all of it.
+    r = subprocess.run([sys.executable, "-m", "airlock.cli", "doctor"],
+                       cwd=str(home), capture_output=True, text=True,
+                       env=dict(os.environ, HOME=str(home), PYTHONPATH=str(ROOT),
+                                AIRLOCK_HOME=str(home / ".airlock"), AIRLOCK_QUIET="1"))
+    s.check("doctor warns when the workspace is the home directory",
+            "home directory" in r.stdout, r.stdout[:200])
+
+    importlib.reload(_cfg)
+
+
 def main():
     s = Suite("BOUNDARIES: POLICY WRITES, OUTCOME LOOP")
     _atomic_writes(s)
     _outcome_loop(s)
+    _workspace_boundary(s)
     return s.report()
 
 
