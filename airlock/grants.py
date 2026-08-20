@@ -172,18 +172,26 @@ def add(pol, grant: dict) -> tuple[Path, str]:
     return path, "granted"
 
 
-def revoke(pol, index: int) -> tuple[Path, str]:
+def revoke(pol, index: int) -> tuple[Path, str, bool]:
+    """(policy file, message, did anything change).
+
+    The third value matters because `airlock allow revoke 5 && echo gone`
+    printed "gone" for a grant that was never there: a no-op reported as
+    success is the wrong answer for a command people put in scripts.
+    """
     path = target_policy(pol)
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     grants = data.get("grants") or []
     if not 0 <= index < len(grants):
-        return path, f"no grant #{index}"
+        n = len(grants)
+        have = f"{n} grant(s), numbered 0..{n - 1}" if n else "no grants"
+        return path, f"no grant #{index} — this policy has {have}", False
     g = grants.pop(index)
     data["grants"] = grants
     header = _leading_comments(path)
     path.write_text(header + yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
                     encoding="utf-8")
-    return path, f"revoked {g.get('tool')}"
+    return path, f"revoked {g.get('tool')}", True
 
 
 def _leading_comments(path: Path) -> str:

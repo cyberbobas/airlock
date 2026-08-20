@@ -230,4 +230,12 @@ def forget(server_id: str) -> str:
             return f"no pin for '{server_id}'"
         if not save(data):
             return f"could not write the pin store — '{server_id}' is unchanged"
-        return f"'{server_id}' unpinned (next run re-TOFUs it)"
+    # Outside the pin lock: contracts keeps its own.
+    try:
+        from . import contracts
+        dropped = contracts.unenforce(server_id)
+    except Exception:
+        dropped = False
+    note = (" — its contract is no longer enforced either "
+            "(`airlock contracts show` still has it)") if dropped else ""
+    return f"'{server_id}' unpinned (next run re-TOFUs it){note}"

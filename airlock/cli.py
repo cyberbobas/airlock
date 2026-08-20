@@ -419,9 +419,15 @@ def cmd_allow(a) -> int:
         if a.tool is None:
             print("  usage: airlock allow revoke <n>", file=sys.stderr)
             return 2
-        path, msg = grants.revoke(pol, int(a.tool))
+        try:
+            index = int(a.tool)
+        except ValueError:
+            print(f"  usage: airlock allow revoke <n> — {a.tool!r} is not a number",
+                  file=sys.stderr)
+            return 2
+        path, msg, changed = grants.revoke(pol, index)
         print(f"  {msg}  {_C['d']}{path}{_C['0']}")
-        return 0
+        return 0 if changed else 1
     elif a.target == "recent":
         rec = grants.recent_gated(a.n)
         if not rec:

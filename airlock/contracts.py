@@ -277,6 +277,29 @@ def observe(server_id: str, tool: str, args: dict) -> None:
         _save(data)
 
 
+def unenforce(server_id: str) -> bool:
+    """Stop enforcing a contract without discarding the review behind it.
+
+    `airlock pins forget` means "start over with this server", and it used to
+    reset only half of that: the pin went, the contract stayed enforced, and
+    the next — different — toolset was blocked tool by tool with "not in pinned
+    contract" while `pins list` showed a healthy new pin. Two subsystems
+    telling the operator contradictory stories about the same server.
+
+    The contract stays on disk, because someone reviewed it; it simply stops
+    speaking for an identity that no longer exists.
+    """
+    with _Lock():
+        data = _load()
+        entry = data.get(server_id)
+        if not entry or not entry.get("enforced"):
+            return False
+        entry["enforced"] = False
+        entry["_unenforced_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _save(data)
+        return True
+
+
 def promote(server_id: str) -> str:
     """Turn what was observed into an enforced contract (learn -> enforce)."""
     with _Lock():
