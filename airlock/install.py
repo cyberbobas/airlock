@@ -141,11 +141,20 @@ def _load_json(p: Path) -> dict:
 
 
 def _save_json(p: Path, data: dict) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(p.suffix + ".tmp")
+    """Atomic write that follows a symlink instead of eating it.
+
+    Plenty of people keep ~/.claude/settings.json as a symlink into a dotfiles
+    repo. os.replace() onto the link path replaced the *link* with a regular
+    file: the real config never got the hook, the next dotfile sync would have
+    dropped it anyway, and `airlock doctor` cheerfully reported the hook as
+    wired. Resolve first, then replace the thing the link points at.
+    """
+    target = Path(os.path.realpath(p)) if p.is_symlink() else p
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(target.suffix + ".tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
                    encoding="utf-8")
-    os.replace(tmp, p)
+    os.replace(tmp, target)
 
 
 # ---- policy ------------------------------------------------------------

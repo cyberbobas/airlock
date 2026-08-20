@@ -61,6 +61,7 @@ non-interactive uninstall. Each now has a regression in `tests/test_regressions.
 | `*fetch*` never matched `WebFetch` | fnmatch is case-sensitive on POSIX, so the shipped allow-list example silently never fired | tool patterns match case-insensitively, as the profiles always said |
 | `allow last` wrote grants that did nothing | the useless-grant check probed the folded glob, not the resource that was refused, so a blocked write to `~/.claude/settings.json` produced a `~/.claude/*` grant and a success message | the concrete resources are probed too; the grant is refused with the rule that blocks it |
 | CEF export named a hardcoded version | a SIEM record that misstates which build made the decision is evidence about nothing in particular | it reads the package version |
+| `init` replaced a symlinked config with a regular file | dotfiles-managed `~/.claude/settings.json` got the hook written to a file the real config never saw, while `doctor` reported it wired | writes resolve the link and replace its target |
 | The report counted allowed asks as "escalated to a block" | it over-claimed protection, in the direction that flatters the product | escalation and unattended-allow are counted and printed separately |
 | Backups collided within one second | the copy that lost was the original — the only one `uninstall` needs | backup names are made unique before writing |
 

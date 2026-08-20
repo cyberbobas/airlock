@@ -526,6 +526,24 @@ def main():
     s.check("CEF carries the real package version", f"|{_v}|" in _export._version()
             or _export._version() == _v, _export._version())
 
+    # === 18. a symlinked config must be written through, not replaced =====
+    # Was: os.replace() onto the link path swapped the symlink for a regular
+    # file. Anyone keeping ~/.claude/settings.json in a dotfiles repo got the
+    # hook written to a file their real config knew nothing about — while
+    # `airlock doctor` reported the hook as wired.
+    d = pathlib.Path(tempfile.mkdtemp(prefix="airlock-link-"))
+    (d / "real").mkdir()
+    real = d / "real" / "settings.json"
+    real.write_text('{"model":"opus"}\n')
+    link = d / "settings.json"
+    link.symlink_to(real)
+    from airlock import install as _install
+    _install._save_json(link, {"model": "opus", "hooks": {"PreToolUse": []}})
+    s.check("the symlink survives the write", link.is_symlink())
+    s.check("the write landed in the real file", "PreToolUse" in real.read_text())
+    s.check("no stray regular file took its place",
+            json.loads(link.read_text()) == json.loads(real.read_text()))
+
     return s.report()
 
 
