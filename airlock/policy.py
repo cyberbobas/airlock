@@ -243,7 +243,7 @@ class Policy:
 
     def _decide_own(self, tool: str, args: dict | None) -> Decision:
         args = args or {}
-        primary = render_action(tool, args)
+        primary, identified = _render(tool, args)
 
         # 1. absolute blocks, over the primary field and every hidden string
         hit = self._match(tool, normalize(primary), block_only=True)
@@ -275,7 +275,7 @@ class Policy:
             return g
 
         # 3. the rule list, first match wins; 4. the default
-        return self._match(tool, normalize(primary))
+        return self._match(tool, normalize(primary), identified=identified)
 
     def _match_grant(self, tool: str, text: str) -> Decision | None:
         today = _today()
@@ -313,10 +313,16 @@ class Policy:
                 self._tool_index[tool] = hit
         return hit
 
-    def _match(self, tool: str, text: str, block_only: bool = False):
+    def _match(self, tool: str, text: str, block_only: bool = False,
+               identified: bool = True):
         every, blocks = self._rules_for(tool)
         for i, action, matcher, reason in (blocks if block_only else every):
             if matcher is not None and not matcher(text):
+                continue
+            # A resource-scoped rule cannot vouch for a resource we could not
+            # find. Tool-scoped rules (no `match`) are unaffected, and blocks
+            # always stand.
+            if not identified and action != BLOCK and matcher is not None:
                 continue
             return Decision(action=action, reason=reason, rule=i)
         return None if block_only else Decision(self.default, "default policy", None)
@@ -425,8 +431,30 @@ def _prepare(pat):
         return lambda text, c=p: c in text
     if p.startswith("*") and p.endswith("*") and not any(c in core for c in "*?[]"):
         return lambda text, c=core: c in text
-    rx = fnmatch._compile_pattern(p)
-    return lambda text, r=rx: r(text) is not None
+    return _compiled(p)
+
+
+def _compiled(p: str):
+    """A callable that answers `does this text match this glob`.
+
+    `fnmatch._compile_pattern` is private: it exists in every version we
+    support and is not promised to. If it ever goes, the alternative must be a
+    slower matcher, never a policy that fails to load — a security tool that
+    stops enforcing because an interpreter tidied up its stdlib is worse than a
+    slow one.
+    """
+    compile_pattern = getattr(fnmatch, "_compile_pattern", None)
+    if compile_pattern is not None:
+        try:
+            rx = compile_pattern(p)
+            return lambda text, r=rx: r(text) is not None
+        except Exception:
+            pass
+    try:
+        rx = re.compile(fnmatch.translate(p))
+        return lambda text, r=rx: r.match(text) is not None
+    except Exception:
+        return lambda text, pat=p: fnmatch.fnmatch(text, pat)
 
 
 def _glob(text: str, pat: str) -> bool:
@@ -528,6 +556,8 @@ _FIELD = {
 
 
 _PCT = re.compile(r"%[0-9a-fA-F]{2}")
+_MAX_DECODE = 64        # each round strictly shrinks the string, so this is a
+                        # runaway guard, not a statement about how deep is legal
 
 
 def normalize(text: str) -> str:
@@ -547,11 +577,16 @@ def normalize(text: str) -> str:
     if text.isascii() and "%" not in text and "\\" not in text:
         return text.lower()
     out = unicodedata.normalize("NFKC", text)
-    for _ in range(2):
+    # Decode to a FIXPOINT, not a fixed number of rounds. Two rounds handled
+    # `%252e`; `%25252e` needed three, and stopping early left `/x/%2essh/`
+    # looking like an ordinary path. The bound is a runaway guard, not a
+    # policy: sixty-four levels of nesting is not a path anyone typed.
+    for _ in range(_MAX_DECODE):
         if "%" not in out:
             break
         try:
-            dec = _PCT.sub(lambda m: chr(int(m.group(0)[1:], 16)), out)
+            dec = unicodedata.normalize(
+                "NFKC", _PCT.sub(lambda m: chr(int(m.group(0)[1:], 16)), out))
         except Exception:
             break
         if dec == out:
@@ -561,15 +596,27 @@ def normalize(text: str) -> str:
 
 
 def render_action(tool: str, args: dict) -> str:
+    return _render(tool, args)[0]
+
+
+def _render(tool: str, args: dict) -> tuple[str, bool]:
+    """(text, was the resource actually identified).
+
+    False means no known field held it and this is the whole argument blob
+    instead. A `match` glob then tests text that includes every other
+    argument, so an unrelated one can satisfy it. Harmless for a block rule —
+    the deny sweep reads every string anyway — and not harmless for an allow
+    rule, which would be certifying a resource nobody could name.
+    """
     key = tool.lower().split("__")[-1]  # mcp__srv__fetch_url -> fetch_url
     for f in _FIELD.get(key, ()):
         if f in args and isinstance(args[f], str):
-            return args[f]
+            return args[f], True
     # Generic: flatten args to a searchable blob, capped. Uncapped, a 20k-key
     # payload produced a 4 MB string and every glob in the rule list was matched
     # against all of it — 2.8 s inside the gate, from one tool call. Every
     # individual string is inspected separately by the deny sweep anyway.
     try:
-        return json.dumps(args, ensure_ascii=False)[:_MAX_LEN]
+        return json.dumps(args, ensure_ascii=False)[:_MAX_LEN], False
     except Exception:
-        return str(args)[:_MAX_LEN]
+        return str(args)[:_MAX_LEN], False

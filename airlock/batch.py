@@ -77,21 +77,54 @@ class Report:
         }
 
 
-def _read(p: Path) -> str | None:
+def _read(p: Path) -> tuple[str | None, str]:
+    """(text, why it could not be read).
+
+    Returning a bare None meant a file the scanner could not open vanished
+    from the report: an unreadable directory, a file over the size cap and a
+    genuinely clean file all produced the same output, and the risk score was
+    computed over whatever happened to be readable. A scan that has not read
+    something must not present the result as complete.
+    """
     try:
-        if p.stat().st_size > MAX_BYTES:
-            return None
-        return p.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return None
+        size = p.stat().st_size
+        if size > MAX_BYTES:
+            return None, f"{p}: skipped, {size // 1024} KB is over the {MAX_BYTES // 1024} KB cap"
+        return p.read_text(encoding="utf-8", errors="replace"), ""
+    except OSError as e:
+        return None, f"{p}: not read ({e.strerror or e})"
+    except Exception as e:
+        return None, f"{p}: not read ({type(e).__name__})"
 
 
-def _walk(root: Path):
+def _walk(root: Path, errors: list[str] | None = None):
+    """Files under root. Directories we cannot enter are reported, not skipped
+    in silence — os.walk swallows them by default.
+
+    Symlinked directories are not followed (a loop would be unbounded), so a
+    skill reachable only through one is out of scope; that is recorded too.
+    """
     if root.is_file():
         yield root
         return
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".git")]
+
+    def _oops(e: OSError):
+        if errors is not None:
+            errors.append(f"{getattr(e, 'filename', root)}: not scanned "
+                          f"({e.strerror or e})")
+
+    for dirpath, dirnames, filenames in os.walk(root, onerror=_oops):
+        keep = []
+        for d in dirnames:
+            if d in SKIP_DIRS or d.startswith(".git"):
+                continue
+            if os.path.islink(os.path.join(dirpath, d)):
+                if errors is not None:
+                    errors.append(f"{os.path.join(dirpath, d)}: not followed "
+                                  f"(symlinked directory)")
+                continue
+            keep.append(d)
+        dirnames[:] = keep
         for fn in filenames:
             yield Path(dirpath) / fn
 
@@ -164,12 +197,14 @@ def scan_path(root: str | Path, *, min_severity: str = "low") -> Report:
     order = {"high": 0, "med": 1, "low": 2}
     cutoff = order.get(min_severity, 2)
 
-    for p in _walk(root):
+    for p in _walk(root, rep.errors):
         kind = _classify_file(p)
         if kind is None:
             continue
-        text = _read(p)
+        text, why = _read(p)
         if text is None:
+            if why:
+                rep.errors.append(why)
             continue
         rep.files_scanned += 1
         rel = str(p)
@@ -231,8 +266,15 @@ def render(rep: Report, *, color: bool = True) -> str:
                f"{c['high']}{counts['high']} high{c['off']} · "
                f"{c['med']}{counts['med']} med{c['off']} · "
                f"{c['low']}{counts['low']} low{c['off']}")
-    for e in rep.errors:
-        out.append(f"  {c['high']}error{c['off']} {e}")
+    if rep.errors:
+        # The score is only about what was read. Saying so next to the score is
+        # the difference between a partial scan and a misleading one.
+        out.append(f"  {c['med']}!{c['off']} {len(rep.errors)} path(s) were not "
+                   f"read — this score covers the rest")
+        for e in rep.errors[:8]:
+            out.append(f"    {c['dim']}{e}{c['off']}")
+        if len(rep.errors) > 8:
+            out.append(f"    {c['dim']}...and {len(rep.errors) - 8} more{c['off']}")
     out.append(f"\n  {c['dim']}Static indicators only. They narrow the contract; "
                f"the runtime gate holds it.{c['off']}\n")
     return "\n".join(out)
