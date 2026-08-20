@@ -190,6 +190,14 @@ $ airlock pins
 While a server is held **every call it receives is blocked**, including ones the
 policy would allow.
 
+The same hold catches poisoning on *first* sight, not just drift. If a tool
+description carries an injection or exfiltration indicator, the toolset is
+pinned and held rather than admitted — the scanner used to record three
+high-severity findings and then let the calls through unchanged, which is
+detection that narrows nothing. Reviewed and legitimate? `airlock pins approve`.
+`yolo`, which escalates nothing, does not hold. Real servers do not trip it:
+`mcp-server-git` (12 tools) and `mcp-server-fetch` admit clean.
+
 ## Per-skill contracts
 
 Global policy answers "may *any* skill do X?". A contract answers "may *this*

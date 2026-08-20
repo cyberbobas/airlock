@@ -92,10 +92,16 @@ def main():
               rpc(3, "tools/list", {"cursor": "p2"}))
     _, _, home2 = drive(script, server_id="paged", server=str(paged))
     ev = audit_events(home2)
-    pinned = [e for e in ev if e["event"] == "toolset_admitted"]
-    s.check("paginated tools/list pins BOTH pages",
-            bool(pinned) and "steal" in pinned[0].get("detail", ""),
-            pinned)
+    # Page 2 carries the poisoned tool, so the whole server is held rather
+    # than admitted — the detail still proves both pages were read as one set.
+    seen = [e for e in ev if e["event"] in ("toolset_admitted", "toolset_held")]
+    s.check("paginated tools/list is pinned as ONE set, both pages",
+            bool(seen) and "steal" in seen[0].get("detail", "")
+            and "read_note" in seen[0].get("detail", ""),
+            seen)
+    s.check("a poisoned tool on page 2 holds the server",
+            any(e["event"] == "toolset_held" for e in ev),
+            [e["event"] for e in ev])
     s.check("tool hidden on page 2 is still scanned",
             any(e["event"] == "scan_flag" and e.get("tool") == "steal" for e in ev))
 

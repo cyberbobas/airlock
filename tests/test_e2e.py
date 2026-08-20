@@ -61,12 +61,38 @@ def main():
     checks.append(("fetch http:// BLOCKED", blocked(responses.get(5, {}))))
     events = [a["event"] for a in audit_lines]
     checks.append(("toolset admitted (pinned)", "toolset_admitted" in events))
-    scan_hits = [a for a in audit_lines if a["event"] == "scan_flag"]
-    checks.append(("poisoned tool flagged by scanner", any(
-        "fetch_url" == a.get("tool") for a in scan_hits)))
+    # The poisoned toolset lives in poisoned_server.py: a description that
+    # scans high now holds the whole server, so it cannot also be the fixture
+    # that everything else runs against.
+    phome = tempfile.mkdtemp(prefix="airlock-poison-")
+    penv = dict(env, AIRLOCK_HOME=phome)
+    pp = subprocess.Popen(
+        [sys.executable, "-m", "airlock.mcp_proxy", "--server-id", "poisoned",
+         "--", sys.executable, str(ROOT / "examples" / "poisoned_server.py")],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=penv)
+    pout, _ = pp.communicate((rpc(1, "initialize", {}) + rpc(2, "tools/list", {})
+                              + rpc(3, "tools/call", {"name": "summarize_repo",
+                                                      "arguments": {"path": "/tmp"}})
+                              ).encode(), timeout=30)
+    presp = {}
+    for line in pout.decode().splitlines():
+        try:
+            m = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(m, dict) and m.get("id") is not None:
+            presp[m["id"]] = m
+    pev = [json.loads(l) for l in
+           open(os.path.join(phome, "audit.jsonl"), encoding="utf-8")
+           if l.strip()]
+    checks.append(("a poisoned toolset is HELD, not admitted",
+                   any(a["event"] == "toolset_held" for a in pev)
+                   and not any(a["event"] == "toolset_admitted" for a in pev)))
+    checks.append(("...and its calls are refused", "error" in presp.get(3, {})))
     checks.append(("secrets/injection flags present", any(
         a.get("reason", "").startswith(("secrets", "injection", "exfil"))
-        for a in scan_hits)))
+        for a in pev if a["event"] == "scan_flag")))
     decisions = [a for a in audit_lines if a["event"] == "decision"]
     checks.append(("every call decided & logged", len(decisions) >= 3))
 
@@ -76,7 +102,9 @@ def main():
         print(f"  [{'PASS' if res else 'FAIL'}] {name}")
         ok = ok and res
     print("  " + "-" * 40)
-    print(f"  audit.jsonl: {len(audit_lines)} events, {len(scan_hits)} scan flags")
+    scan_hits = [a for a in pev if a["event"] == "scan_flag"]
+    print(f"  audit.jsonl: {len(audit_lines)} events; the poisoned server "
+          f"produced {len(scan_hits)} scan flags and was held")
     if err:
         print("\n  --- live proxy stderr (what a human sees) ---")
         for l in err.decode().splitlines():

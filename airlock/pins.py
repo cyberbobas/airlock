@@ -111,8 +111,17 @@ def _now() -> str:
 _HELD_NOW: dict[str, dict] = {}
 
 
-def check_toolset(server_id: str, tools: list[dict], flags: list[dict]):
-    """Return (status, pin). status in {'new','unchanged','changed','held'}."""
+def check_toolset(server_id: str, tools: list[dict], flags: list[dict],
+                  hold_on_flag: bool = False):
+    """Return (status, pin). status in {'new','unchanged','changed','held'}.
+
+    hold_on_flag makes a first sighting behave like a drift: the toolset is
+    pinned, and every call to it is held until a human approves. The scanner
+    found tool poisoning at admission, recorded three high-severity findings
+    and admitted the server anyway — detection that changes no decision is
+    detection that narrows nothing, which is the opposite of what the static
+    stage is for.
+    """
     h = toolset_hash(tools)
     names = sorted(t.get("name", "?") for t in tools)
     with _Lock():
@@ -121,14 +130,24 @@ def check_toolset(server_id: str, tools: list[dict], flags: list[dict]):
 
         if prev is None:
             pin = {"hash": h, "tools": names, "flagged": bool(flags),
-                   "pinned_at": _now(), "held": False}
+                   "pinned_at": _now(), "held": bool(hold_on_flag)}
+            if hold_on_flag:
+                pin["pending"] = {"hash": h, "tools": names, "flagged": True,
+                                  "seen_at": _now(), "poisoned": True}
             data[server_id] = pin
             pin["persisted"] = save(data)
+            if hold_on_flag:
+                _HELD_NOW[server_id] = pin
             return "new", pin
 
         if prev.get("hash") == h:
             # Same toolset as the trusted pin. If it was held on an earlier
-            # drift and the server reverted, the hold is satisfied.
+            # drift and the server reverted, the hold is satisfied — but a hold
+            # placed because the descriptions themselves scanned high is not
+            # satisfied by the server staying exactly as poisoned as it was.
+            if prev.get("held") and (prev.get("pending") or {}).get("poisoned"):
+                _HELD_NOW[server_id] = prev
+                return "held", prev
             if prev.get("held"):
                 prev["held"] = False
                 prev.pop("pending", None)
@@ -163,6 +182,11 @@ def is_held(server_id: str) -> tuple[bool, str]:
     pend = pin.get("pending") or {}
     added = sorted(set(pend.get("tools") or []) - set(pin.get("tools") or []))
     detail = f" new tools: {', '.join(added)}" if added else ""
+    if pend.get("poisoned") and not pend.get("rejected"):
+        return True, (f"a tool description on this server carries an injection "
+                      f"or exfiltration indicator — held for review "
+                      f"(`airlock pins approve {server_id}` if you have read it)"
+                      f"{detail}")
     if pend.get("rejected"):
         return True, (f"toolset was reviewed and REJECTED — calls stay blocked "
                       f"until the server reverts, or you override with "

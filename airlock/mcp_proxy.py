@@ -339,9 +339,28 @@ class Proxy:
         flags: list[dict] = []
         for t in tools:
             flags.extend(scan.scan_tool(t))
-        status, _pin = pins.check_toolset(self.server_id, tools, flags)
+        # A high-severity finding in a tool *description* is not an argument
+        # to weigh at call time — it is a reason not to trust the toolset at
+        # all. Held on the same mechanism as a rug pull, and only when the
+        # profile says a high flag means something (`yolo` sets no escalate).
+        high = [f for f in flags if f.get("severity") == "high"]
+        hold = bool(high) and bool(self.policy.escalate.get("high"))
+        status, _pin = pins.check_toolset(self.server_id, tools, flags,
+                                          hold_on_flag=hold)
         names = ", ".join(sorted(t.get("name", "?") for t in tools)) or "(none)"
-        if status == "new":
+        if status == "new" and hold:
+            audit.record("toolset_held", source="mcp", server=self.server_id,
+                         effective="hold",
+                         reason=("tool descriptions carry "
+                                 + ", ".join(sorted({f["id"] for f in high}))
+                                 + f" — HELD until `airlock pins approve "
+                                   f"{self.server_id}`"),
+                         flags=flags, extra=names)
+            notify.blocked(tool=f"mcp__{self.server_id}__*",
+                           reason="a tool description looks poisoned",
+                           resource=names[:120],
+                           fix=f"airlock pins approve {self.server_id}")
+        elif status == "new":
             contracts.ensure_default(
                 self.server_id, [t.get("name", "?") for t in tools])
             audit.record("toolset_admitted", source="mcp", server=self.server_id,
