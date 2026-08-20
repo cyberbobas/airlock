@@ -405,6 +405,8 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 78  # EX_CONFIG
     try:
+        from .policy import gate_fingerprint
+        audit.note_gate(*gate_fingerprint(policy))
         audit.record("proxy_start", source="mcp", server=server_id, effective="admit",
                      reason=f"mode={policy.mode}", extra=" ".join(argv))
     except Exception as e:

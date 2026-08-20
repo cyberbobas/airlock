@@ -249,7 +249,14 @@ $ airlock verify           # after deleting a segment *and* its ledger line
                 — audit.chain was truncated, pruned or deleted
 ```
 
-That is tamper *evidence*. It is not tamper-proofing: an attacker holding the
+That is tamper *evidence*.
+
+The log also records the gate itself. Each enforcement point fingerprints the
+policy it loaded, its digest, the mode and any `AIRLOCK_*` variable that can
+weaken it, and writes one line whenever that changes — so a run under a
+substituted policy is visible as a substitution rather than as a quiet stretch
+of ordinary-looking allows. `airlock report` leads with the count when it is
+not zero. It is not tamper-proofing: an attacker holding the
 HMAC key can re-forge both structures. What raises that ceiling is shipping the
 log off the box, or `AIRLOCK_SIGN=ed25519` with the private key held elsewhere.
 

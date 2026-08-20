@@ -123,6 +123,21 @@ rules:
   # enough — an unattended ask is an allow under `guard`.
   - { tool: "*", match: "*.mcp.json*",         action: block, reason: "the MCP server list is the gate's own config" }
   - { tool: "*", match: "*.claude/settings*.json*", action: block, reason: "agent may not rewire its own hooks" }
+  # Files that put environment variables in front of the gate's own process.
+  # AIRLOCK_MODE=observe or AIRLOCK_POLICY=<anything> disables enforcement, and
+  # zsh reads .zshenv on every invocation, non-interactive ones included.
+  - { tool: "*", match: "*/.zshenv*",         action: block, reason: "shell env file — read before every gate process" }
+  - { tool: "*", match: "*/.zprofile*",       action: block, reason: "shell env file — read before every gate process" }
+  - { tool: "*", match: "*/.zshrc*",          action: block, reason: "shell env file — read before every gate process" }
+  - { tool: "*", match: "*/.bashrc*",         action: block, reason: "shell env file — read before every gate process" }
+  - { tool: "*", match: "*/.bash_profile*",   action: block, reason: "shell env file — read before every gate process" }
+  - { tool: "*", match: "*/.bash_env*",       action: block, reason: "shell env file — read before every gate process" }
+  - { tool: "*", match: "*/.profile*",        action: block, reason: "shell env file — read before every gate process" }
+  - { tool: "*", match: "*environment.d/*",   action: block, reason: "systemd user environment" }
+  - { tool: "*", match: "*.pam_environment*", action: block, reason: "PAM user environment" }
+  - { tool: "*", match: "*AIRLOCK_MODE*",     action: block, reason: "setting the gate's own mode" }
+  - { tool: "*", match: "*AIRLOCK_POLICY*",   action: block, reason: "pointing the gate at another policy" }
+  - { tool: "*", match: "*AIRLOCK_FAIL_OPEN*", action: block, reason: "turning the gate off" }
   # ...and tampering with Airlock's own configuration
   - { tool: "*", match: "*.airlock/*",        action: block, reason: "agent may not edit its own firewall" }
   - { tool: "*", match: "*airlock*policy.yaml*", action: block, reason: "agent may not edit its own firewall" }

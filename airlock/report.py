@@ -48,6 +48,7 @@ class Report:
     ask_too_late: int = 0      # a human answered, after the call had been decided
     handed_ran: int = 0        # handed to the agent's own prompt, and it ran
     handed_never_ran: int = 0  # handed over, and never ran: the human said no
+    gate_changes: list = field(default_factory=list)   # the gate's own config moved
     ask_to_block: int = 0      # an ask that the scanner or a contract escalated
     ask_to_allow: int = 0      # an ask the mode resolved without anyone present
     scan_flags: Counter = field(default_factory=Counter)
@@ -73,6 +74,7 @@ class Report:
                   "handed_over_and_did_not": self.handed_never_ran,
                   "escalated_to_block": self.ask_to_block,
                   "allowed_unattended": self.ask_to_allow},
+            "gate_changes": self.gate_changes,
             "scan_flags": self.scan_flags.most_common(),
             "servers": self.servers,
             "held": self.held,
@@ -125,6 +127,9 @@ def build(days: int = 7, path: Path | None = None) -> Report:
             seen_days.add(rec["ts"][:10])
 
         ev = rec.get("event")
+        if ev == "gate_config" and "changed" in (rec.get("reason") or ""):
+            r.gate_changes.append({"at": rec.get("ts", ""),
+                                   "detail": rec.get("detail", "")})
         if ev == "outcome":
             ran.add((rec.get("session", ""), rec.get("tool", ""),
                      rec.get("args_digest", "")))
@@ -300,6 +305,16 @@ def render(r: Report, *, color: bool = True) -> str:
     o.append("")
 
     tone = c["l"] if r.chain_ok else c["h"]
+    if r.gate_changes:
+        # The most important line in the report when it is not empty: the rest
+        # of it describes decisions made by a gate that was not the same gate
+        # throughout.
+        o.append(f"\n  {c['h']}The gate's own configuration changed "
+                 f"{len(r.gate_changes)} time(s) in this window{c['0']}")
+        for g in r.gate_changes[:5]:
+            o.append(f"    {c['d']}{g['at'][:19]}  {g['detail'][:110]}{c['0']}")
+        if len(r.gate_changes) > 5:
+            o.append(f"    {c['d']}...and {len(r.gate_changes) - 5} more{c['0']}")
     o.append(f"  {c['b']}Audit{c['0']}  {tone}"
              f"{'chain intact' if r.chain_ok else 'CHAIN BROKEN'}{c['0']} "
              f"{c['d']}— {r.chain_msg}{c['0']}")

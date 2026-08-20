@@ -43,6 +43,7 @@ agent's own approval prompt, so a human still decides.
 """
 from __future__ import annotations
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -108,6 +109,7 @@ class Policy:
     # A repository's own .airlock/policy.yaml. Consulted for every decision,
     # but only ever to make one stricter — see resolve().
     overlay: "Policy | None" = None
+    digest: str = ""           # of the file this was loaded from
 
     # ---- loading -------------------------------------------------------
     @classmethod
@@ -148,6 +150,7 @@ class Policy:
     def load(cls, path: str | os.PathLike) -> "Policy":
         p = Path(path)
         raw = p.read_text(encoding="utf-8")
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
         data: dict[str, Any]
         if p.suffix in (".yaml", ".yml"):
             import yaml  # pyyaml is present; fall back to json otherwise
@@ -176,6 +179,7 @@ class Policy:
             grants=data.get("grants") or [],
             path=p,
             profile=data.get("profile", ""),
+            digest=digest,
         )
         pol.mode = os.environ.get("AIRLOCK_MODE", data.get("mode", GUARD)).lower()
         pol.validate()
@@ -365,6 +369,38 @@ class Policy:
                 d = Decision(act, f"{d.reason} + scan flag {f.get('id')} "
                                   f"({f.get('severity')})", d.rule)
         return d
+
+
+# Knobs that change nothing about what is enforced; without this the
+# fingerprint would churn on every differently-invoked process.
+_NOISY_KNOBS = {"AIRLOCK_QUIET", "AIRLOCK_NOTIFY", "AIRLOCK_SESSION",
+                "AIRLOCK_NOTIFY_COOLDOWN", "AIRLOCK_ASK_TIMEOUT",
+                "AIRLOCK_AUDIT_FSYNC", "AIRLOCK_AUDIT_MAX_MB", "AIRLOCK_LIST_WAIT"}
+
+
+def gate_fingerprint(pol: "Policy") -> tuple[str, str]:
+    """(fingerprint, description) of everything that decides enforcement.
+
+    Which policy file, its contents, the mode, and the environment knobs that
+    can weaken it. `AIRLOCK_POLICY=/tmp/anything` and `AIRLOCK_MODE=observe`
+    each switch enforcement off outright, and the records they produce read
+    exactly like ordinary ones — `rm -rf /` allowed, reason "default policy".
+    The log has to be able to say that the gate it was recording was not the
+    gate anybody installed.
+    """
+    knobs = {k: os.environ[k] for k in sorted(os.environ)
+             if k.startswith("AIRLOCK_") and k not in _NOISY_KNOBS}
+    parts = [str(pol.path), pol.digest, pol.mode, pol.source,
+             str(getattr(pol.overlay, "path", "")),
+             getattr(pol.overlay, "digest", ""),
+             json.dumps(knobs, sort_keys=True)]
+    fp = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+    desc = f"policy={pol.path} ({pol.source}) digest={pol.digest} mode={pol.mode}"
+    if pol.overlay is not None:
+        desc += f" overlay={pol.overlay.path}:{pol.overlay.digest}"
+    if knobs:
+        desc += " env=" + ",".join(f"{k}={v}" for k, v in knobs.items())
+    return fp, desc
 
 
 # ---- helpers -----------------------------------------------------------

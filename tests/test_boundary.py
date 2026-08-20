@@ -218,11 +218,84 @@ def _workspace_boundary(s):
     importlib.reload(_cfg)
 
 
+def _environment_boundary(s):
+    """The gate reads its own configuration from an environment it does not own."""
+    from airlock import config as _cfg
+    from airlock.policy import Policy
+
+    home = pathlib.Path(tempfile.mkdtemp(prefix="bd-env-"))
+    (home / "proj").mkdir()
+    base = dict(os.environ, PYTHONPATH=str(ROOT), HOME=str(home),
+                AIRLOCK_HOME=str(home / ".airlock"), AIRLOCK_QUIET="1",
+                AIRLOCK_NOTIFY="0")
+    for k in ("AIRLOCK_POLICY", "AIRLOCK_PROFILE", "AIRLOCK_MODE", "AIRLOCK_FAIL_OPEN"):
+        base.pop(k, None)
+    subprocess.run([sys.executable, "-m", "airlock.cli", "profile", "paranoid"],
+                   env=base, capture_output=True)
+    evil = home / "evil.yaml"
+    evil.write_text("mode: guard\ndefault: allow\nask_fallback: allow\nrules: []\n")
+
+    def hook(env_extra=None):
+        env = dict(base)
+        env.update(env_extra or {})
+        return subprocess.run([sys.executable, "-m", "airlock.cc_hook"],
+                              input=json.dumps({"tool_name": "Bash",
+                                                "tool_input": {"command": "rm -rf /"}}),
+                              text=True, capture_output=True, cwd=str(home / "proj"),
+                              env=env).returncode
+
+    s.check("a destructive call is refused", hook() == 2)
+    # These two really do switch enforcement off — that is what they are for.
+    # The point is not to prevent it, it is that the log must say so.
+    s.check("AIRLOCK_POLICY replaces the policy outright",
+            hook({"AIRLOCK_POLICY": str(evil)}) == 0)
+    s.check("AIRLOCK_MODE=observe stops blocking",
+            hook({"AIRLOCK_MODE": "observe"}) == 0)
+    s.check("and the gate goes back to refusing afterwards", hook() == 2)
+
+    recs = [json.loads(l) for l in
+            (home / ".airlock" / "audit.jsonl").read_text().splitlines() if l.strip()]
+    changes = [r for r in recs if r.get("event") == "gate_config"]
+    s.check("the log records the gate's configuration", changes, len(changes))
+    s.check("...and names each change", len(changes) >= 3,
+            [r.get("reason") for r in changes])
+    swapped = [r for r in changes if "evil.yaml" in (r.get("detail") or "")]
+    s.check("a swapped policy is named in the log", swapped,
+            [r.get("detail", "")[:70] for r in changes])
+    s.check("so is the mode it ran under",
+            any("mode=observe" in (r.get("detail") or "") for r in changes))
+    before = len(changes)
+    for _ in range(4):
+        hook()                      # same configuration, four more times
+    recs = [json.loads(l) for l in
+            (home / ".airlock" / "audit.jsonl").read_text().splitlines() if l.strip()]
+    after = len([r for r in recs if r.get("event") == "gate_config"])
+    s.check("an unchanged configuration adds no records", after == before,
+            f"{before} -> {after}")
+
+    # The files that put those variables in front of the gate's process. zsh
+    # reads .zshenv on every invocation, non-interactive ones included.
+    pol = Policy.load(str(_cfg.profile_path("default")))
+    for f in (".zshenv", ".zprofile", ".zshrc", ".bashrc", ".bash_profile",
+              ".profile", ".config/environment.d/x.conf", ".pam_environment"):
+        d = pol.decide("Write", {"file_path": f"{home}/{f}", "content": "x"})
+        s.check(f"writing ~/{f} is refused", d.action == "block", d.reason)
+    s.check("so is exporting the mode from a shell",
+            pol.decide("Bash", {"command": "export AIRLOCK_MODE=observe"}).action == "block")
+    for label, args in (("a data file with 'profile' in the name",
+                         {"file_path": "/srv/data/profile.csv"}),
+                        ("a source file called env.ts", {"file_path": "/proj/src/env.ts"}),
+                        ("a dotfiles dir in the project", {"file_path": "/proj/dotfiles/README"})):
+        s.check(f"{label} is not caught by those rules",
+                pol.decide("Read", args).action != "block", args)
+
+
 def main():
     s = Suite("BOUNDARIES: POLICY WRITES, OUTCOME LOOP")
     _atomic_writes(s)
     _outcome_loop(s)
     _workspace_boundary(s)
+    _environment_boundary(s)
     return s.report()
 
 

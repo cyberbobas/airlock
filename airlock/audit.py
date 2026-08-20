@@ -419,6 +419,39 @@ def ledger_digest(entry: dict) -> str:
     return hashlib.sha256(blob).hexdigest()[:16]
 
 
+def note_gate(fingerprint: str, description: str) -> bool:
+    """Record a change in the gate's own configuration, once per change.
+
+    Every enforcement point calls this at startup. In steady state it costs one
+    small read and writes nothing; the moment the policy file, its contents,
+    the mode or a weakening environment variable differs from what was last
+    seen, the log gets one line saying so. Without it a swapped policy produced
+    decisions indistinguishable from ordinary ones.
+    """
+    p = home() / "gate.state"
+    try:
+        was = p.read_text(encoding="utf-8").strip()
+    except OSError:
+        was = ""
+    if was == fingerprint:
+        return False
+    try:
+        record("gate_config", source="audit", effective="flag",
+               reason=("the gate's configuration changed" if was
+                       else "gate configuration recorded"),
+               extra=description[:400])
+    except Exception:
+        return False
+    try:
+        tmp = p.with_suffix(".state.tmp")
+        tmp.write_text(fingerprint, encoding="utf-8")
+        os.replace(tmp, p)
+        os.chmod(p, 0o600)
+    except OSError:
+        pass
+    return True
+
+
 def chain_ledger(*, strict: bool = False) -> list[dict]:
     """Every rotation handover ever recorded, oldest first.
 

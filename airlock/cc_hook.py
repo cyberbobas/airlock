@@ -28,7 +28,7 @@ import json
 import os
 import sys
 
-from . import audit, config, contracts, notify, scan
+from . import audit, config, contracts, notify, policy as policy_mod, scan
 from .policy import ASK, BLOCK, Policy
 
 EXIT_ALLOW, EXIT_BLOCK = 0, 2
@@ -113,6 +113,11 @@ def main() -> int:
             return EXIT_ALLOW
         return _deny(f"policy could not be loaded ({e}). "
                      f"Fix it, or set AIRLOCK_FAIL_OPEN=1 to run without a gate.")
+
+    try:
+        audit.note_gate(*policy_mod.gate_fingerprint(policy))
+    except Exception:
+        pass                   # noticing must never be able to stop enforcing
 
     flags = scan.scan_text(json.dumps(args, ensure_ascii=False))
     d = policy.decide(tool, args)
