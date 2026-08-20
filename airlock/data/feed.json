@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "updated": "2026-08-20",
+  "note": "Bundled starter feed. `airlock update` replaces it with the live one.",
+  "patterns": [
+    {"id": "exfil.collector", "severity": "high",
+     "regex": "webhook\\.site|requestbin|pipedream\\.net|ngrok(-free)?\\.(io|app)|burpcollaborator|oastify\\.com|interact\\.sh|\\.oast\\.|dnslog\\.cn|canarytokens|beeceptor\\.com|typedwebhook\\.tools",
+     "why": "names a known exfiltration collector host"},
+    {"id": "exfil.paste", "severity": "med",
+     "regex": "pastebin\\.com/api|paste\\.ee|hastebin|termbin\\.com|transfer\\.sh|0x0\\.st|file\\.io",
+     "why": "anonymous paste/upload service — a common exfil hop"},
+    {"id": "secrets.token", "severity": "high",
+     "regex": "gh[pousr]_[A-Za-z0-9]{16,}|sk-(ant|proj|live)-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}",
+     "why": "a live-looking credential appears in the text"},
+    {"id": "injection.encoded", "severity": "med",
+     "regex": "(?:[A-Za-z0-9+/]{60,}={0,2})|\\\\u00(?:69|67|6e)(?:\\\\u00[0-9a-f]{2}){4,}",
+     "why": "a long encoded blob where prose is expected"},
+    {"id": "supply.install_url", "severity": "med",
+     "regex": "(npm|pnpm|yarn)\\s+(i|install|add)\\s+(https?://|git\\+)|pip\\s+install\\s+(git\\+|https?://)|go\\s+install\\s+\\S+@",
+     "why": "installs a dependency from a URL rather than a registry pin"}
+  ],
+  "block_hosts": [
+    "webhook.site", "requestbin.net", "oastify.com", "interact.sh",
+    "dnslog.cn", "burpcollaborator.net"
+  ]
+}

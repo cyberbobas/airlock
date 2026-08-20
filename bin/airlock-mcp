@@ -1,0 +1,5 @@
+#!/bin/sh
+# Wrap a real MCP server behind Airlock. Usage:
+#   airlock-mcp [--server-id NAME] -- <server cmd...>
+here=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec env PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}" python3 -m airlock.mcp_proxy "$@"

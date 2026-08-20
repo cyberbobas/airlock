@@ -1,0 +1,3 @@
+#!/bin/sh
+# Tail the audit log.
+exec tail -f "${AIRLOCK_HOME:-$HOME/.airlock}/audit.jsonl"

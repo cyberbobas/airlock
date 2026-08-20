@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "airlock-agent"
+version = "0.3.1"
+description = "Runtime firewall for AI coding agents — gate every tool call, MCP call and skill against a least-privilege policy."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{ name = "Airlock" }]
+keywords = ["mcp", "ai-agent", "security", "prompt-injection", "claude-code",
+            "firewall", "least-privilege", "agent-security"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Intended Audience :: System Administrators",
+  "Operating System :: MacOS :: MacOS X",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Security",
+]
+dependencies = ["PyYAML>=6.0"]
+
+[project.optional-dependencies]
+sign = ["cryptography>=42"]
+
+[project.urls]
+Homepage = "https://github.com/airlock-agent/airlock"
+Issues = "https://github.com/airlock-agent/airlock/issues"
+
+[project.scripts]
+airlock = "airlock.cli:main"
+airlock-mcp = "airlock.mcp_proxy:main"
+airlock-hook = "airlock.cc_hook:main"
+airlock-askd = "airlock.askd:main"
+
+[tool.setuptools]
+packages = ["airlock"]
+
+[tool.setuptools.package-data]
+airlock = ["profiles/*.yaml", "data/*.json"]

@@ -1,0 +1,71 @@
+# Airlock — yolo profile.
+#
+# Posture: observe only. NOTHING is ever blocked, including `rm -rf /`. Every
+# call is still decided, scanned and written to the audit log, and each server's
+# real fs/net/shell footprint is recorded as a contract proposal.
+#
+# This is the learn phase, not a safety setting. Run it for a few days, read
+# `airlock report`, then `airlock profile default`.
+
+profile: yolo
+mode: observe
+default: allow
+# Inert here: `observe` never refuses anything.
+ask_fallback: allow
+
+escalate: {}
+
+grants: []
+
+rules:
+  # Kept so the log still says WHY something was dangerous, even though observe
+  # mode refuses nothing. The report is built from these reasons.
+  # ---- absolute blocks: destructive ----------------------------------
+  - { tool: "*", match: "*rm *-*r*f* /*",     action: block, reason: "destructive recursive delete" }
+  - { tool: "*", match: "*rm *-*f*r* /*",     action: block, reason: "destructive recursive delete" }
+  - { tool: "*", match: "*rm *-*r*f* ~*",     action: block, reason: "destructive recursive delete (home)" }
+  - { tool: "*", match: "*mkfs*",             action: block, reason: "filesystem format" }
+  - { tool: "*", match: "*drop table*",       action: block, reason: "destructive SQL" }
+  - { tool: "*", match: "*drop database*",    action: block, reason: "destructive SQL" }
+  - { tool: "*", match: "*git push --force*", action: block, reason: "force-push rewrites history" }
+  - { tool: "*", match: "*git push -f *",     action: block, reason: "force-push rewrites history" }
+
+  # ---- absolute blocks: secrets --------------------------------------
+  - { tool: "*", match: "*/.ssh/*",           action: block, reason: "private-key path off-limits" }
+  - { tool: "*", match: "*id_rsa*",           action: block, reason: "SSH private key" }
+  - { tool: "*", match: "*id_ed25519*",       action: block, reason: "SSH private key" }
+  - { tool: "*", match: "*.env*",             action: block, reason: ".env / secrets off-limits" }
+  - { tool: "*", match: "*.aws/credentials*", action: block, reason: "AWS credentials" }
+  - { tool: "*", match: "*.kube/config*",     action: block, reason: "kubeconfig" }
+  - { tool: "*", match: "*.git-credentials*", action: block, reason: "git credentials" }
+  - { tool: "*", match: "*.netrc*",           action: block, reason: "netrc credentials" }
+  - { tool: "*", match: "*.npmrc*",           action: block, reason: "npm auth token" }
+  - { tool: "*", match: "*.docker/config.json*", action: block, reason: "docker registry auth" }
+
+  # ---- absolute blocks: download-and-execute -------------------------
+  - { tool: "*", match: "*curl*|*sh*",        action: block, reason: "curl-pipe-shell" }
+  - { tool: "*", match: "*wget*|*sh*",        action: block, reason: "wget-pipe-shell" }
+  - { tool: "*", match: "*|*bash*",           action: block, reason: "pipe-to-bash" }
+
+  # ---- absolute blocks: SSRF / known collectors ----------------------
+  - { tool: "*", match: "*169.254.169.254*",  action: block, reason: "cloud metadata endpoint (SSRF)" }
+  - { tool: "*", match: "*metadata.google.internal*", action: block, reason: "cloud metadata endpoint (SSRF)" }
+  - { tool: "*", match: "*webhook.site*",     action: block, reason: "known exfil collector" }
+  - { tool: "*", match: "*requestbin*",       action: block, reason: "known exfil collector" }
+  - { tool: "*", match: "*.oastify.com*",     action: block, reason: "known exfil collector" }
+  - { tool: "*", match: "*interact.sh*",      action: block, reason: "known exfil collector" }
+
+  # ---- absolute blocks: launching an MCP server outside the gate -----
+  # Airlock only sees servers the agent starts THROUGH it. A shell that starts
+  # one directly is a way around the whole boundary — see README, "Limits".
+  - { tool: "Bash",                match: "*mcp-server*",   action: block, reason: "starts an MCP server outside Airlock" }
+  - { tool: "Bash",                match: "*mcp_server*",   action: block, reason: "starts an MCP server outside Airlock" }
+  - { tool: "*__run_command",      match: "*mcp-server*",   action: block, reason: "starts an MCP server outside Airlock" }
+  - { tool: "Bash",                match: "*claude mcp add*", action: block, reason: "registers an MCP server outside Airlock" }
+  - { tool: "Bash",                match: "*.mcp.json*",    action: block, reason: "edits the MCP server list" }
+  # ...and tampering with Airlock's own configuration
+  - { tool: "*", match: "*.airlock/*",        action: block, reason: "agent may not edit its own firewall" }
+  - { tool: "*", match: "*airlock*policy.yaml*", action: block, reason: "agent may not edit its own firewall" }
+
+  - { tool: "Bash", action: ask, reason: "shell execution" }
+  - { tool: "*fetch*", action: ask, reason: "network egress" }

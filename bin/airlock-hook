@@ -1,0 +1,4 @@
+#!/bin/sh
+# Claude Code PreToolUse hook entry point.
+here=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec env PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}" python3 -m airlock.cc_hook

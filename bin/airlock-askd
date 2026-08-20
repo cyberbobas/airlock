@@ -1,0 +1,6 @@
+#!/bin/sh
+# Approval daemon: turns `ask` verdicts into real GUI prompts.
+#   airlock-askd              # zenity GUI
+#   airlock-askd --auto allow # headless auto-approve (tests)
+here=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec env PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}" python3 -m airlock.askd "$@"
