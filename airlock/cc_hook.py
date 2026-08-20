@@ -28,14 +28,22 @@ import json
 import os
 import sys
 
-from . import audit, config, contracts, notify, policy as policy_mod, scan
-from .policy import ASK, BLOCK, Policy
+from . import audit, config, contracts, notify, pins, policy as policy_mod, scan
+from .policy import ASK, BLOCK, OBSERVE, Decision, Policy
 
 EXIT_ALLOW, EXIT_BLOCK = 0, 2
 
 
 def _flag(name: str) -> bool:
     return os.environ.get(name, "").lower() in ("1", "true", "yes")
+
+
+def _mcp_server(tool: str) -> str | None:
+    """`mcp__github__create_issue` -> `github`, else None."""
+    if not tool.startswith("mcp__"):
+        return None
+    parts = tool.split("__")
+    return parts[1] if len(parts) >= 3 and parts[1] else None
 
 
 def _deny(reason: str) -> int:
@@ -123,6 +131,30 @@ def main() -> int:
     d = policy.decide(tool, args)
     d = policy.apply_flags(d, flags)
     _, resource = contracts.classify(tool, args)
+
+    # Claude Code routes MCP tool calls through PreToolUse as
+    # `mcp__server__tool`, so this gate sees the very calls the proxy sees. It
+    # was applying only the policy — which meant a server the proxy was HOLDING
+    # for a rug pull or tool poisoning had its calls allowed here, and a
+    # per-skill contract the proxy enforced did nothing at all. Two gates
+    # answering differently about one call is a hole the size of "whichever
+    # gate this deployment happens to have".
+    server = _mcp_server(tool)
+    if server:
+        held, why = pins.is_held(server)
+        if held and policy.mode != OBSERVE:
+            audit.record("decision", source="hook", tool=tool, decision=BLOCK,
+                         effective=BLOCK, reason=why, args=args, flags=flags,
+                         session=session, resource=resource)
+            notify.blocked(tool=tool, reason="toolset held pending review",
+                           resource=resource, fix=f"airlock pins approve {server}")
+            return _deny(f"{tool}: {why}")
+        contract = contracts.get(server)
+        if contract and contract.enforced:
+            c_action, c_reason = contract.check(tool.split("__")[-1], args)
+            d = d.combine(Decision(c_action,
+                                   f"contract: {c_reason}" if c_reason else d.reason,
+                                   -1))
 
     # The hook HAS an interactive channel (Claude Code's own prompt), so unlike
     # the proxy it does NOT apply ask_fallback: `ask` stays `ask`. The mode

@@ -12,6 +12,7 @@ of collapsing to block.
 from __future__ import annotations
 import json
 import os
+import signal
 import socket
 import sys
 import threading
@@ -94,6 +95,18 @@ def main(argv=None) -> int:
     srv.listen(16)
     mode = f"auto={auto}" if auto else "zenity GUI"
     print(f"[airlock-askd] listening on {p}  ({mode})", file=sys.stderr, flush=True)
+    # A supervisor sends SIGTERM, not ^C. Without a handler the default action
+    # killed the daemon outright and the socket stayed on disk — after which
+    # every `ask` connected to nothing, waited out the timeout and refused,
+    # while `airlock doctor` still reported that asks would reach a human.
+    def bye(signum, _frame):
+        raise KeyboardInterrupt
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(sig, bye)
+        except (ValueError, OSError):
+            pass
+
     try:
         while True:
             conn, _ = srv.accept()

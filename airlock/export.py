@@ -6,6 +6,7 @@ collector takes; JSONL is for everyone else.
 """
 from __future__ import annotations
 import json
+import re
 import socket
 import time
 from pathlib import Path
@@ -22,6 +23,13 @@ def _version() -> str:
 
 _SEVERITY = {"block": 8, "hold": 8, "ask": 5, "flag": 4, "allow": 2,
              "admit": 2, "change": 6}
+# The one sequence that can be mistaken for the header of a structured-data
+# element. Escaping `"` `\` `]` satisfies RFC5424 and a compliant parser, but a
+# regex-based SIEM pipeline scanning for `[airlock@` finds a second "element"
+# inside an escaped value. Neutralising just the marker leaves every other
+# bracket in the text alone.
+_SD_MARKER = re.compile(r"\[(airlock@)")
+
 _CEF_ESCAPE = str.maketrans({"\\": r"\\", "|": r"\|", "=": r"\="})
 
 
@@ -62,6 +70,12 @@ def _sd(v) -> str:
     """
     out = str(v or "")
     out = out.replace("\\", "\\\\").replace('"', '\\"').replace("]", "\\]")
+    # Escaping alone satisfies the RFC and any compliant parser. It does not
+    # satisfy the regex-based SIEM pipelines that are just as common: those scan
+    # for `[airlock@` and find a second "element" sitting inside an escaped
+    # value. Neutralising that one marker — and nothing else — closes it without
+    # touching any other bracket in the text.
+    out = out.replace("[airlock@", "(airlock@")
     return "".join(" " if ch < " " or ch == "\x7f" else ch for ch in out)
 
 
@@ -89,6 +103,20 @@ def to_cef(rec: dict) -> str:
             f"{_esc(rec.get('event','decision'))}|{_esc(name)}|{sev}|{body}")
 
 
+def _msg(v) -> str:
+    """The free-text half of a syslog line.
+
+    RFC5424 says MSG is not parsed as structured data, and a compliant parser
+    reads it that way. Plenty of SIEM pipelines are regexes rather than parsers,
+    and a reason containing `[airlock@0 effective="allow"` gave those a second
+    element to find — the same forgery that was fixed one field over, just moved
+    into MSG. Brackets are neutralised here; the exact text is still carried,
+    correctly escaped, as `reason=` inside the real SD element.
+    """
+    return (str(v or "").replace("\\", "/").replace("[", "(").replace("]", ")")
+            .replace("\n", " ").replace("\r", " ").replace("\x00", ""))
+
+
 def to_syslog(rec: dict, host: str | None = None, app: str = "airlock") -> str:
     """RFC5424. Priority = local0 (16) * 8 + severity."""
     eff = rec.get("effective") or rec.get("decision") or "?"
@@ -98,8 +126,16 @@ def to_syslog(rec: dict, host: str | None = None, app: str = "airlock") -> str:
     ts = rec.get("ts", "") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     sd = (f'[airlock@0 event="{_sd(rec.get("event"))}" effective="{_sd(eff)}" '
           f'tool="{_sd(rec.get("tool"))}" server="{_sd(rec.get("server"))}" '
-          f'resource="{_sd(rec.get("resource"))}" digest="{_sd(rec.get("h"))}"]')
+          f'resource="{_sd(rec.get("resource"))}" reason="{_sd(rec.get("reason"))}" '
+          f'digest="{_sd(rec.get("h"))}"]')
+    # MSG is free text and a compliant parser does not read structured data out
+    # of it — but plenty of SIEM pipelines are regexes, and a reason containing
+    # `[airlock@0 effective="allow"` handed those a second element to find. That
+    # is the same forgery that was fixed one field over, moved into MSG.
+    # Brackets are neutralised here; the exact text is carried, correctly
+    # escaped, as `reason=` inside the real SD element above.
     msg = "".join(" " if ch < " " else ch for ch in str(rec.get("reason") or ""))
+    msg = msg.replace("[", "(").replace("]", ")")
     return f"<{pri}>1 {_sd(ts)} {_sd(host)} {app} - - {sd} {msg}"
 
 

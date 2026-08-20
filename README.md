@@ -145,9 +145,12 @@ airlock scan ./skill --json            # machine-readable
 airlock scan ./skill --fail-on-findings # exit 1 in CI
 ```
 
-Reports injection / secret-access / exfil / stealth indicators with line
-numbers, enumerates every MCP server definition, and says which are **not**
-behind Airlock. Indicators are evidence for a human, never a verdict.
+Reads what an agent reads as instructions — `SKILL.md` and `AGENTS.md`, but
+also `.claude/commands/`, `.claude/agents/`, `.cursor/rules/`,
+`.github/copilot-instructions.md`, and any file whose frontmatter makes it a
+skill wherever it sits. Reports injection / secret-access / exfil / stealth
+indicators with line numbers, enumerates every MCP server definition, says
+which are **not** behind Airlock, and gives each its admission state. Indicators are evidence for a human, never a verdict.
 
 The score is weighted by *where* a finding sits. An imperative in a `SKILL.md`
 is evidence; the same words in source, in a test, or in prose about these

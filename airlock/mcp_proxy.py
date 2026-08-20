@@ -29,6 +29,7 @@ Example:
 from __future__ import annotations
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -389,7 +390,45 @@ class Proxy:
                          tool=f.get("tool", "?"), effective="flag",
                          reason=f"{f['id']} ({f['severity']})", extra=f.get("hit", ""))
 
+    def shutdown(self, grace: float = 3.0) -> None:
+        """Take the MCP server down. Terminate, then insist.
+
+        Without this, SIGTERM to the proxy left the server running: a process
+        holding the credentials and sockets it was given, now with no gate in
+        front of it and no parent to answer to. Restarting an agent a few times
+        accumulated them.
+        """
+        proc = getattr(self, "proc", None)
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            proc.terminate()
+        except OSError:
+            return
+        try:
+            proc.wait(timeout=grace)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                proc.wait(timeout=grace)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+
+    def _install_signal_handlers(self) -> None:
+        def bye(signum, _frame):
+            audit.record("proxy_stop", source="mcp", server=self.server_id,
+                         effective="admit",
+                         reason=f"signal {signal.Signals(signum).name}")
+            self.shutdown()
+            raise SystemExit(128 + signum)
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            try:
+                signal.signal(sig, bye)
+            except (ValueError, OSError):
+                pass          # not the main thread, or the platform lacks it
+
     def run(self) -> int:
+        self._install_signal_handlers()
         t1 = threading.Thread(target=self.pump_client_to_server, daemon=True)
         t2 = threading.Thread(target=self.pump_server_to_client, daemon=True)
         t1.start(); t2.start()
@@ -436,14 +475,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[airlock] refusing to start: cannot use {config.home()}: {e}",
               file=sys.stderr)
         return 78  # EX_CONFIG
+    proxy = None
     try:
-        return Proxy(server_id, argv, policy).run()
+        proxy = Proxy(server_id, argv, policy)
+        return proxy.run()
     except FileNotFoundError as e:
         print(f"[airlock] cannot launch MCP server: {e.filename or argv[0]} "
               f"not found on PATH", file=sys.stderr)
         return 127
     except KeyboardInterrupt:
+        if proxy is not None:
+            proxy.shutdown()
         return 130
+    finally:
+        if proxy is not None:
+            proxy.shutdown()
 
 
 if __name__ == "__main__":

@@ -135,6 +135,28 @@ overhead from 0.66 ms to 0.47 ms. The change was proven behaviour-preserving
 against the old matcher over 317 patterns × 48 texts and 4 000 random decisions
 before it was kept.
 
+## Defects found by the sixth deep round
+
+Aimed at the newest code and at three things a feature suite never looks at:
+whether the two enforcement points answer the same question the same way, what
+is left running after a signal, and whether the report's arithmetic closes.
+
+| defect | why it mattered | fix |
+|---|---|---|
+| The hook enforced neither holds nor contracts | Claude Code routes MCP calls through PreToolUse as `mcp__server__tool`, so both gates see the same call. A server the proxy was HOLDING for a rug pull or tool poisoning had its calls allowed by the hook, and a per-skill contract did nothing there at all. The "calls held" guarantee had a second door | the hook resolves the server id from the tool name and applies the hold and the contract, so the two gates agree |
+| An agent reads instructions from more than `SKILL.md` | the same key-stealing payload scored 90 in `skills/SKILL.md` and 10 in `.claude/commands/deploy.md` — a slash command injected into the prompt verbatim. Subagent definitions, Cursor rules and `copilot-instructions.md` had the same discount; YAML and TOML prompts were not read at all; and `.github` was skipped entirely by a `startswith(".git")` filter. The false-positive fix had produced a false negative | instruction *locations* are recognised, skill frontmatter promotes a file wherever it sits, data files are scanned, and `.git` is skipped without swallowing `.github` |
+| A signal orphaned the MCP server | SIGTERM/SIGINT/SIGHUP stopped the proxy and left its child running: a process holding the credentials and sockets it was given, with no gate in front of it and no parent. Restarting an agent a few times accumulated them | the proxy terminates its child on a signal and on every exit path, insisting with SIGKILL after a grace period |
+| The approval daemon left its socket behind | a supervisor sends SIGTERM, not `^C`. The default action killed the daemon and the socket stayed on disk, after which every `ask` connected to nothing, waited out the timeout and refused — while `doctor` reported that asks would reach a human | the daemon cleans up on SIGTERM/SIGHUP, and the ask channel probes the socket rather than trusting that the file exists |
+| Syslog MSG could forge a second SD element | the structured-data half was escaped correctly, but the free-text half carried the reason raw. RFC5424 says MSG is not parsed as SD and a compliant parser agrees; the regex-based SIEM pipelines that are just as common do not. The same forgery that was fixed one field over, moved into MSG | the SD-ID marker is neutralised wherever it appears, and the reason is carried properly escaped inside the real SD element |
+
+What this round confirmed rather than broke: the poisoned-toolset hold holds
+across restarts, catches poison in a parameter description, refuses to be
+laundered by a server that later serves a clean toolset, releases on
+`airlock pins approve`, does not fire on a medium-severity phrase, and does not
+hold `mcp-server-time`, `mcp-server-git` or `mcp-server-fetch`. The report's
+totals, per-effect counts, reason sums, ask breakdown, per-server sums and
+rendered percentages all reconcile against `audit.jsonl`.
+
 ## Matching is by string, not by resolved identity
 
 Two limits worth stating plainly, because both are reachable:

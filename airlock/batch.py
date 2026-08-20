@@ -14,16 +14,39 @@ static and deterministic: it produces evidence for a human, not a verdict.
 from __future__ import annotations
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import scan
 
-SKILL_NAMES = {"skill.md", "agents.md", "claude.md", "readme.md"}
+SKILL_NAMES = {"skill.md", "agents.md", "agent.md", "claude.md", "readme.md",
+               "gemini.md", "copilot-instructions.md", ".cursorrules",
+               ".windsurfrules", ".clinerules", ".aiderrules", ".roorules"}
+
+# Directories an agent loads as INSTRUCTIONS rather than as prose. Weighting by
+# filename alone meant the same key-stealing payload scored 90 in SKILL.md and
+# 10 in .claude/commands/deploy.md — a slash command, injected into the prompt
+# verbatim. Claude Code alone reads commands/, agents/ and skills/; Cursor reads
+# rules/. Those are the files worth scoring as instructions.
+INSTRUCTION_DIRS = {"skill", "skills", "commands", "agents", "subagents",
+                    "rules", "prompts", "instructions", "personas",
+                    ".claude", ".cursor", ".windsurf", ".roo", ".continue",
+                    ".aider", ".codex", ".gemini", ".opencode"}
+
+# Frontmatter is the agent-skill format itself, wherever the file happens to sit.
+_FRONTMATTER = re.compile(
+    r"\A\ufeff?\s*---\s*\n(.{0,2000}?)\n---\s*(\n|\Z)", re.S)
+_SKILL_KEYS = re.compile(r"^\s*(name|description|tools|model|argument-hint)\s*:",
+                         re.M)
 CONFIG_NAMES = {".mcp.json", "mcp.json", "claude_desktop_config.json",
                 "settings.json", "settings.local.json", "config.json"}
 CODE_SUFFIXES = {".sh", ".bash", ".zsh", ".py", ".js", ".mjs", ".cjs", ".ts", ".ps1"}
-DOC_SUFFIXES = {".md", ".markdown", ".mdc", ".txt"}
+DOC_SUFFIXES = {".md", ".markdown", ".mdc", ".txt", ".rst"}
+# Prompts and personas live in these as often as in markdown. Scanned, but only
+# scored as instructions when they sit somewhere an agent reads instructions —
+# otherwise every policy file full of the patterns it blocks would score itself.
+DATA_SUFFIXES = {".yaml", ".yml", ".toml"}
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist",
              "build", ".next", "target", ".mypy_cache", ".pytest_cache"}
 MAX_BYTES = 2_000_000
@@ -117,7 +140,10 @@ def _walk(root: Path, errors: list[str] | None = None):
     for dirpath, dirnames, filenames in os.walk(root, onerror=_oops):
         keep = []
         for d in dirnames:
-            if d in SKIP_DIRS or d.startswith(".git"):
+            # `.git` is skipped; `.github` is NOT — copilot-instructions.md
+            # lives there and is read into the model's context verbatim, and a
+            # startswith(".git") filter swallowed the whole directory.
+            if d in SKIP_DIRS or d == ".git":
                 continue
             if os.path.islink(os.path.join(dirpath, d)):
                 if errors is not None:
@@ -154,14 +180,36 @@ def _admission_state(server_id: str) -> str:
     return f"pinned {(pin.get('pinned_at') or '')[:10]}"
 
 
-def _classify_file(p: Path) -> str | None:
+def _is_instruction_location(p: Path) -> bool:
+    return any(part.lower() in INSTRUCTION_DIRS for part in p.parent.parts)
+
+
+def has_skill_frontmatter(text: str) -> bool:
+    """Does this file open with the frontmatter block an agent skill uses?"""
+    m = _FRONTMATTER.match(text or "")
+    return bool(m and _SKILL_KEYS.search(m.group(1)))
+
+
+def _classify_file(p: Path, text: str | None = None) -> str | None:
+    """What kind of file this is, which decides how heavily its findings score.
+
+    `text` is optional so callers can classify before reading; passing it lets
+    frontmatter promote a file to `skill` wherever it lives.
+    """
     n = p.name.lower()
+    suffix = p.suffix.lower()
     if n in CONFIG_NAMES:
         return "mcp-config"
-    if n in SKILL_NAMES or (p.suffix.lower() in DOC_SUFFIXES and
-                            "skill" in str(p.parent).lower()):
+    if n in SKILL_NAMES:
         return "skill"
-    if p.suffix.lower() in DOC_SUFFIXES:
+    if suffix in DOC_SUFFIXES or suffix in DATA_SUFFIXES:
+        if _is_instruction_location(p):
+            return "skill"
+        if text is not None and has_skill_frontmatter(text):
+            return "skill"
+    if suffix in DATA_SUFFIXES:
+        return "doc"
+    if suffix in DOC_SUFFIXES:
         # Prose that mentions a secret path is not a skill telling an agent to
         # read one. Still scanned and still reported — just not scored as an
         # instruction, which is what made every security document look like an
@@ -228,14 +276,16 @@ def scan_path(root: str | Path, *, min_severity: str = "low") -> Report:
     cutoff = order.get(min_severity, 2)
 
     for p in _walk(root, rep.errors):
-        kind = _classify_file(p)
-        if kind is None:
+        if _classify_file(p) is None:
             continue
         text, why = _read(p)
         if text is None:
             if why:
                 rep.errors.append(why)
             continue
+        # classify again with the content: frontmatter identifies a skill file
+        # wherever someone put it
+        kind = _classify_file(p, text)
         rep.files_scanned += 1
         rel = str(p)
         if kind == "mcp-config":

@@ -108,6 +108,16 @@ Standing suites: `tests/test_audit.py` for the integrity story on its own,
 `tests/test_deep.py` for robustness, overlay and matcher checks in
 `tests/test_policy.py`.
 
+## Sixth deep round ✅
+
+Five defects (table in `THREATMODEL.md`), the two most consequential being the
+hook ignoring holds and contracts — which gave the plane-4 guarantee a second
+door — and the scanner discounting every agent-instruction file that is not
+named `SKILL.md`.
+
+Standing suite: `tests/test_lifecycle.py` for signals, orphans and whether the
+two gates agree; scanner-classification regressions in `tests/test_boundary.py`.
+
 ## Now — what to build next
 
 | priority | item | why |

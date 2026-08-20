@@ -29,10 +29,34 @@ def sock_path() -> Path:
     return home() / "ask.sock"
 
 
+def daemon_listening(timeout: float = 0.5) -> bool:
+    """Is anything actually accepting on the ask socket?
+
+    A daemon killed with SIGKILL leaves the socket file behind. Treating its
+    mere existence as "a human is reachable" made `doctor` report a channel
+    that was not there, and made every `ask` pay a timeout before failing safe.
+    """
+    p = sock_path()
+    if not p.exists():
+        return False
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.settimeout(timeout)
+        s.connect(str(p))
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+
+
 def auto_backends() -> list[str]:
     """The ask channels available right here, strongest first."""
     order: list[str] = []
-    if sock_path().exists():
+    if daemon_listening():
         order.append("socket")
     if sys.platform == "darwin":
         if _which("osascript"):
