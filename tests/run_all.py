@@ -4,7 +4,7 @@ import pathlib, subprocess, sys, time
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SUITES = ["test_e2e.py", "test_contract.py", "test_ask.py", "test_redteam.py",
           "test_scan.py", "test_policy.py",
-          "test_proxy_robustness.py", "test_product.py", "test_regressions.py"]
+          "test_proxy_robustness.py", "test_product.py", "test_regressions.py", "test_deep.py"]
 
 
 def main() -> int:

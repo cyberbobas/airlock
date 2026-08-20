@@ -124,7 +124,9 @@ added by Airlock     p50  0.540 ms   p99  0.610 ms
 peak RSS             27 MB
 ```
 
-Python 3.14, Linux. Reproduce with `airlock bench`. For scale: one model turn is
+Sustained: 4 000 gated calls at ~900/s with flat memory (29 MB) and no
+descriptor growth. Python 3.14, Linux; also verified on 3.13. Reproduce with
+`airlock bench`. For scale: one model turn is
 hundreds of milliseconds at best. The gate is not where your agent spends time.
 
 Audit durability is tunable: `AIRLOCK_AUDIT_FSYNC=critical` (default) fsyncs
@@ -290,6 +292,7 @@ machine-wide one covers everything else. Paths use `${workspace}`, `${home}`,
 * `AIRLOCK_FAIL_OPEN=1` · `AIRLOCK_STRICT=1`
 * `AIRLOCK_SIGN=hmac|ed25519` · `AIRLOCK_SIGN_KEY` · `AIRLOCK_VERIFY_KEY`
 * `AIRLOCK_AUDIT_FSYNC=critical|always|never` · `AIRLOCK_AUDIT_MAX_MB=64`
+* `AIRLOCK_MAX_ARG_VALUES=4096` · `AIRLOCK_MAX_ARG_CHARS=1000000` · `AIRLOCK_MAX_ARG_DEPTH=12`
 * `AIRLOCK_FEED_URL` · `AIRLOCK_FEED_KEY`
 * `AIRLOCK_QUIET=1` — log only, no live stderr line.
 
@@ -310,6 +313,14 @@ A security tool that oversells its boundary is worse than none:
   default policy blocks writes to `.airlock/` and `policy.yaml`; keep them
   outside the workspace the agent writes to anyway.
 * **Non-Claude-Code native tools are ungated.** See the coverage table.
+* **Paths are matched as strings, not resolved.** A symlink pointing at a secret,
+  or a secret split across several arguments and rejoined by the tool itself,
+  is not caught. Both are documented in `THREATMODEL.md`.
+* **Arguments past the inspection budget are refused, not skipped.** Airlock
+  reads up to `AIRLOCK_MAX_ARG_VALUES` (4096) strings and
+  `AIRLOCK_MAX_ARG_CHARS` (1 000 000) characters per call. A payload larger than
+  that is blocked with a message saying so, because "we did not read all of it"
+  is not the same statement as "it is clean".
 
 See `THREATMODEL.md` for the attack-by-attack table, including the bypasses this
 project has already lost to once.

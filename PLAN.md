@@ -84,6 +84,19 @@ The lesson recorded for next time: a passing suite measures the paths you
 thought to exercise. Rotation, a hostile feed and a non-tty uninstall were all
 things the code claimed in a docstring and nothing ever ran.
 
+## Deep-test pass ✅
+
+Seven rounds against the areas a feature-driven suite does not reach:
+concurrency and crash integrity, fuzzing and invariants, a third adversarial
+wave, failure injection, real MCP servers, soak, and the install matrix.
+
+Four more defects found and fixed (table in `THREATMODEL.md`), the most serious
+being an argument-budget evasion that let ~600 filler arguments carry a secret
+path past every rule on a default install.
+
+Standing regressions now include the concurrency and budget cases:
+`tests/test_deep.py`.
+
 ## Now — what to build next
 
 | priority | item | why |

@@ -45,11 +45,19 @@ rules:
   - { tool: "*", match: "*git push -f *",     action: block, reason: "force-push rewrites history" }
 
   # ---- absolute blocks: secrets --------------------------------------
+  # Both the directory and what is inside it. `*/.ssh/*` alone left the
+  # directory itself on `ask`, which `guard` allows with no daemon — so
+  # `git_status ~/.ssh` or any tool that lists a directory walked straight in.
+  - { tool: "*", match: "*/.ssh",             action: block, reason: "private-key directory off-limits" }
   - { tool: "*", match: "*/.ssh/*",           action: block, reason: "private-key path off-limits" }
+  - { tool: "*", match: "*/.gnupg",           action: block, reason: "GPG keyring directory" }
+  - { tool: "*", match: "*/.gnupg/*",         action: block, reason: "GPG keyring" }
   - { tool: "*", match: "*id_rsa*",           action: block, reason: "SSH private key" }
   - { tool: "*", match: "*id_ed25519*",       action: block, reason: "SSH private key" }
   - { tool: "*", match: "*.env*",             action: block, reason: ".env / secrets off-limits" }
+  - { tool: "*", match: "*/.aws",             action: block, reason: "AWS credential directory" }
   - { tool: "*", match: "*.aws/credentials*", action: block, reason: "AWS credentials" }
+  - { tool: "*", match: "*/.kube",            action: block, reason: "kubeconfig directory" }
   - { tool: "*", match: "*.kube/config*",     action: block, reason: "kubeconfig" }
   - { tool: "*", match: "*.git-credentials*", action: block, reason: "git credentials" }
   - { tool: "*", match: "*.netrc*",           action: block, reason: "netrc credentials" }

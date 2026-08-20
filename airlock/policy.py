@@ -58,9 +58,17 @@ MODES = (OBSERVE, GUARD, ENFORCE)
 # strictness ordering: block is strictest, allow is loosest
 RANK = {ALLOW: 0, ASK: 1, BLOCK: 2}
 
-# bounds for the deny sweep, so a pathological payload can't burn the hot path
-_MAX_DEPTH = 8
-_MAX_VALUES = 512
+# Bounds for the deny sweep, so a pathological payload cannot burn the hot path.
+#
+# These are not just performance knobs: whatever they cut off is a part of the
+# payload the gate did not read. A budget of 512 values meant ~600 filler
+# arguments pushed a secret path out of view entirely, and the call came back
+# `ask` — which `guard` with no daemon then allows. So the budget is generous
+# enough that real calls never reach it, and reaching it is itself a refusal
+# rather than a silent gap. Raise them deliberately if a real workload needs it.
+_MAX_DEPTH = int(os.environ.get("AIRLOCK_MAX_ARG_DEPTH", "12"))
+_MAX_VALUES = int(os.environ.get("AIRLOCK_MAX_ARG_VALUES", "4096"))
+_MAX_TOTAL_CHARS = int(os.environ.get("AIRLOCK_MAX_ARG_CHARS", "1000000"))
 _MAX_LEN = 8192
 
 _SEVERITY_RANK = {"low": 0, "med": 1, "high": 2}
@@ -113,6 +121,15 @@ class Policy:
             data = json.loads(raw)
         if not isinstance(data, dict):
             raise ValueError(f"{p}: policy must be a mapping, got {type(data).__name__}")
+        # A file that parses to nothing is not a permissive policy — it is a
+        # truncated or empty one, and under `guard` it silently allowed
+        # everything, secrets included, while still looking like a valid setup.
+        # Missing `rules:` is therefore a load error, which fails closed.
+        if "rules" not in data:
+            raise ValueError(
+                f"{p}: policy has no `rules:` section — refusing to run with a "
+                f"policy that enforces nothing. If you meant an empty rule list, "
+                f"write `rules: []` explicitly.")
         # ${workspace} / ${home} / ${user} / ${tmp} -> real paths, so a shipped
         # policy is portable instead of being one machine's absolute paths.
         data = config.expand(data)
@@ -128,6 +145,15 @@ class Policy:
         pol.mode = os.environ.get("AIRLOCK_MODE", data.get("mode", GUARD)).lower()
         pol.validate()
         return pol
+
+    def has_teeth(self) -> bool:
+        """Does this policy actually refuse anything?
+
+        `rules: []` is a legitimate thing to write while building one up, so it
+        loads — but nothing is being enforced, and `airlock doctor` says so
+        rather than letting the install look healthy.
+        """
+        return any(r.get("action") == BLOCK for r in self.rules if isinstance(r, dict))
 
     def validate(self) -> None:
         """Reject a malformed policy loudly — a security tool must not run on a
@@ -161,8 +187,9 @@ class Policy:
         hit = self._match(tool, primary.lower(), block_only=True)
         if hit is not None:
             return hit
+        budget = Budget()
         seen = {primary}
-        for s in iter_strings(args):
+        for s in iter_strings(args, budget=budget):
             if s in seen:
                 continue
             seen.add(s)
@@ -171,6 +198,14 @@ class Policy:
                 return Decision(BLOCK,
                                 f"{hit.reason} (hidden in argument: {_ellipsis(s)})",
                                 hit.rule)
+        if budget.exhausted:
+            # We did not read all of it, so we cannot say it is clean. Refusing
+            # is the only answer that keeps "a blocked string anywhere blocks"
+            # true; the message says how to lift it on purpose.
+            return Decision(BLOCK,
+                            f"arguments too large to inspect ({budget.why}) — "
+                            f"raise AIRLOCK_MAX_ARG_VALUES/CHARS to allow it",
+                            None)
 
         # 2. reviewed grants
         g = self._match_grant(tool, primary.lower())
@@ -278,28 +313,62 @@ def _ellipsis(s: str, n: int = 60) -> str:
     return s if len(s) <= n else s[:n] + "…"
 
 
-def iter_strings(obj: Any, _depth: int = 0, _budget: list | None = None) -> Iterator[str]:
+@dataclass
+class Budget:
+    """How much of an argument object the sweep is allowed to read.
+
+    `exhausted` is the part that matters: it tells the caller the payload was
+    only partly inspected, so "no block rule matched" does not mean "clean".
+    """
+    values: int = _MAX_VALUES
+    chars: int = _MAX_TOTAL_CHARS
+    exhausted: bool = False
+    why: str = ""
+
+    def spend(self, s: str) -> bool:
+        if self.values <= 0:
+            self.exhausted, self.why = True, f"more than {_MAX_VALUES} values"
+            return False
+        if self.chars <= 0:
+            self.exhausted, self.why = True, f"more than {_MAX_TOTAL_CHARS} characters"
+            return False
+        self.values -= 1
+        self.chars -= len(s)
+        return True
+
+    def too_deep(self) -> None:
+        self.exhausted, self.why = True, f"nested deeper than {_MAX_DEPTH}"
+
+
+def iter_strings(obj: Any, _depth: int = 0, budget: "Budget | None" = None
+                 ) -> Iterator[str]:
     """Yield every string reachable in a JSON-ish structure — values AND keys.
 
     Keys count because an attacker controls the whole argument object, and a
     tool that iterates its own kwargs can act on a key just as easily.
     """
-    if _budget is None:
-        _budget = [_MAX_VALUES]
-    if _depth > _MAX_DEPTH or _budget[0] <= 0:
+    if budget is None:
+        budget = Budget()
+    if budget.exhausted:
+        return
+    if _depth > _MAX_DEPTH:
+        budget.too_deep()
         return
     if isinstance(obj, str):
-        _budget[0] -= 1
-        yield obj[:_MAX_LEN]
+        if budget.spend(obj):
+            yield obj[:_MAX_LEN]
     elif isinstance(obj, dict):
         for k, v in obj.items():
-            if isinstance(k, str):
-                _budget[0] -= 1
+            if isinstance(k, str) and budget.spend(k):
                 yield k[:_MAX_LEN]
-            yield from iter_strings(v, _depth + 1, _budget)
+            yield from iter_strings(v, _depth + 1, budget)
+            if budget.exhausted:
+                return
     elif isinstance(obj, (list, tuple)):
         for v in obj:
-            yield from iter_strings(v, _depth + 1, _budget)
+            yield from iter_strings(v, _depth + 1, budget)
+            if budget.exhausted:
+                return
 
 
 # per-tool "action string": the single most security-relevant field, so that
@@ -330,8 +399,11 @@ def render_action(tool: str, args: dict) -> str:
     for f in _FIELD.get(key, ()):
         if f in args and isinstance(args[f], str):
             return args[f]
-    # generic: flatten args to a searchable blob
+    # Generic: flatten args to a searchable blob, capped. Uncapped, a 20k-key
+    # payload produced a 4 MB string and every glob in the rule list was matched
+    # against all of it — 2.8 s inside the gate, from one tool call. Every
+    # individual string is inspected separately by the deny sweep anyway.
     try:
-        return json.dumps(args, ensure_ascii=False)
+        return json.dumps(args, ensure_ascii=False)[:_MAX_LEN]
     except Exception:
-        return str(args)
+        return str(args)[:_MAX_LEN]

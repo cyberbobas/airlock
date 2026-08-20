@@ -209,6 +209,9 @@ def cmd_doctor(a) -> int:
         pol.source = why
         rows.append(("ok", f"policy: {pol_path} ({why})"))
         rows.append(("ok", f"policy loads: {len(pol.rules)} rules, mode={pol.mode}"))
+        if not pol.has_teeth() and pol.mode != "observe":
+            rows.append(("bad", "this policy has no block rules — nothing is being "
+                                "enforced (airlock profile default --force)"))
         if pol.mode == "observe":
             rows.append(("warn", "mode=observe — nothing is being blocked (learn phase). "
                                  "Promote to guard once you have a baseline."))

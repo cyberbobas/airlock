@@ -35,10 +35,12 @@ same-privilege attacker holding the HMAC key can re-forge both. Off-box shipping
 or `AIRLOCK_SIGN=ed25519` with an external key is what raises that ceiling.
 """
 from __future__ import annotations
+import contextlib
 import hashlib
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -59,6 +61,55 @@ _CHAINED = ("ts", "event", "source", "server", "tool", "decision", "effective",
 _LEDGER_CHAINED = ("segment", "last", "at", "prev")
 _ANCHOR = "ledger="
 _ROTATING = False
+
+# Rotation renames the live file. Anything appending through an fd it opened
+# before the rename keeps writing into the *rotated* segment — after the ledger
+# already recorded that segment's final digest. The result was a log that
+# reported itself truncated under nothing worse than two busy agents. So
+# rotation and appending serialise on a lock file, which is the one thing in
+# here that never gets renamed out from under a waiter.
+_MUTEX = threading.RLock()
+_flock_depth = 0
+_flock_fh = None
+
+
+def lock_path() -> Path:
+    return home() / "audit.lock"
+
+
+@contextlib.contextmanager
+def _append_lock():
+    """Exclusive across processes, reentrant within one.
+
+    Reentrant because `_anchor` writes an ordinary audit record from inside
+    rotation, which is itself inside this lock; a plain flock would deadlock
+    against itself there.
+    """
+    global _flock_depth, _flock_fh
+    with _MUTEX:
+        if _flock_depth == 0:
+            try:
+                _flock_fh = open(lock_path(), "a+")
+                try:
+                    os.chmod(lock_path(), 0o600)
+                except OSError:
+                    pass
+                if fcntl:
+                    fcntl.flock(_flock_fh.fileno(), fcntl.LOCK_EX)
+            except OSError:
+                _flock_fh = None      # unwritable home: still record, unlocked
+        _flock_depth += 1
+        try:
+            yield
+        finally:
+            _flock_depth -= 1
+            if _flock_depth == 0 and _flock_fh is not None:
+                try:
+                    if fcntl:
+                        fcntl.flock(_flock_fh.fileno(), fcntl.LOCK_UN)
+                    _flock_fh.close()
+                finally:
+                    _flock_fh = None
 MAX_MB = float(os.environ.get("AIRLOCK_AUDIT_MAX_MB", "64"))
 
 # fsync costs ~0.5ms. Paying it on every allowed call taxes the hot path for
@@ -220,6 +271,14 @@ def record(event: str, *, source: str, tool: str = "", server: str = "",
         "flags": flags or [],
     }
     path = audit_path()
+    with _append_lock():
+        _write_record(path, rec, effective, decision)
+    _stderr(effective or decision or event, tool or server, reason, extra)
+    return rec
+
+
+def _write_record(path: Path, rec: dict, effective: str, decision: str) -> None:
+    """Append one chained record. Caller holds the append lock."""
     _rotate_if_needed(path)
     existed = path.exists()
     with open(path, "a+b") as f:
@@ -231,8 +290,6 @@ def record(event: str, *, source: str, tool: str = "", server: str = "",
                 os.chmod(path, 0o600)
             except OSError:
                 pass
-        if fcntl:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         try:
             rec["prev"] = _tail_hash(f)
             rec["h"] = chain_digest(rec)
@@ -247,11 +304,8 @@ def record(event: str, *, source: str, tool: str = "", server: str = "",
             if _FSYNC == "always" or (_FSYNC == "critical"
                                       and (effective or decision) in _CRITICAL):
                 os.fsync(f.fileno())
-        finally:
-            if fcntl:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-    _stderr(effective or decision or event, tool or server, reason, extra)
-    return rec
+        except OSError:
+            pass          # an unwritable log must not stop the enforcement
 
 
 def ledger_path() -> Path:
@@ -425,6 +479,55 @@ def _anchor(segment: str, ledger_h: str) -> None:
         pass
     finally:
         _ROTATING = False
+
+# Rotation renames the live file. Anything appending through an fd it opened
+# before the rename keeps writing into the *rotated* segment — after the ledger
+# already recorded that segment's final digest. The result was a log that
+# reported itself truncated under nothing worse than two busy agents. So
+# rotation and appending serialise on a lock file, which is the one thing in
+# here that never gets renamed out from under a waiter.
+_MUTEX = threading.RLock()
+_flock_depth = 0
+_flock_fh = None
+
+
+def lock_path() -> Path:
+    return home() / "audit.lock"
+
+
+@contextlib.contextmanager
+def _append_lock():
+    """Exclusive across processes, reentrant within one.
+
+    Reentrant because `_anchor` writes an ordinary audit record from inside
+    rotation, which is itself inside this lock; a plain flock would deadlock
+    against itself there.
+    """
+    global _flock_depth, _flock_fh
+    with _MUTEX:
+        if _flock_depth == 0:
+            try:
+                _flock_fh = open(lock_path(), "a+")
+                try:
+                    os.chmod(lock_path(), 0o600)
+                except OSError:
+                    pass
+                if fcntl:
+                    fcntl.flock(_flock_fh.fileno(), fcntl.LOCK_EX)
+            except OSError:
+                _flock_fh = None      # unwritable home: still record, unlocked
+        _flock_depth += 1
+        try:
+            yield
+        finally:
+            _flock_depth -= 1
+            if _flock_depth == 0 and _flock_fh is not None:
+                try:
+                    if fcntl:
+                        fcntl.flock(_flock_fh.fileno(), fcntl.LOCK_UN)
+                    _flock_fh.close()
+                finally:
+                    _flock_fh = None
 
 
 def verify(path: Path | None = None, *, all_segments: bool = False

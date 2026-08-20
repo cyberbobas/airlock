@@ -65,6 +65,41 @@ non-interactive uninstall. Each now has a regression in `tests/test_regressions.
 | The report counted allowed asks as "escalated to a block" | it over-claimed protection, in the direction that flatters the product | escalation and unattended-allow are counted and printed separately |
 | Backups collided within one second | the copy that lost was the original — the only one `uninstall` needs | backup names are made unique before writing |
 
+## Defects found by deep testing
+
+A third pass exercised what hand-driven tests never reach: two processes at the
+same state, arguments larger than the gate reads, a broken environment, and the
+install matrix. Four more defects, all in the same shape as the audit's — code
+that fires rarely, so nothing ever ran it.
+
+| defect | why it mattered | fix |
+|---|---|---|
+| Rotation ran outside the append lock | a second writer kept appending into the segment that had just been renamed and ledgered, so `verify` reported a truncated log with no attacker involved. Two busy agents were enough | rotation and appending serialise on a lock file that is never renamed; the lock is reentrant so the rotation anchor record can be written from inside it |
+| Arguments past the inspection budget were invisible | ~600 filler arguments pushed a secret path out of the deny sweep; the call came back `ask`, which `guard` allows with no daemon. A working bypass of every secret-path rule on a default install | the budget is far larger, and exhausting it is now a refusal — "we did not read all of it" cannot report as "clean" |
+| An uncapped argument blob | a 20 000-key payload built a 4 MB string and matched every glob against all of it: 2.8 s inside the gate from one call | the rendered blob is capped; every individual string is swept separately anyway |
+| An empty policy enforced nothing, silently | `{}` — or a file truncated by a failed write — parses, has no rules, and under `guard` allows everything while `doctor` still looks healthy | a policy with no `rules:` key is a load error (fail closed); an explicit `rules: []` loads but `doctor` reports it as enforcing nothing |
+| Secret directories were only `ask` | `*/.ssh/*` needs something after the slash, so `~/.ssh` itself fell through — `git_status ~/.ssh`, or any tool that lists a directory, walked in | directory forms added for `.ssh`, `.gnupg`, `.aws`, `.kube` |
+
+What deep testing confirmed rather than broke: 480 concurrent audit records with
+no loss or tearing, 20 concurrent pins with exactly one `new`, an audit chain
+that survives repeated `SIGKILL` mid-write, 4 000 calls at ~900/s with flat
+memory and no descriptor leak, and identical behaviour installed as a wheel,
+an sdist, editable, via `uv tool` and via `pipx`, on Python 3.13 and 3.14.
+
+## Matching is by string, not by resolved identity
+
+Two limits worth stating plainly, because both are reachable:
+
+* **Symlinks are not resolved.** Airlock matches the path the agent asked for.
+  A link named innocently that points at `~/.ssh` is followed by the OS, not by
+  the gate. Containment against that needs a sandbox or an LSM, not a policy.
+* **A secret split across separate arguments is not reassembled.** Each string
+  is inspected on its own, so `["~", ".ssh", "id_rsa"]` passed to a tool that
+  joins its own arguments is three innocent strings to the gate.
+
+Both are consequences of gating at the call boundary rather than at the syscall.
+They are the honest edge of what this layer can claim.
+
 ## The load-bearing assumption
 
 Rows 1, 7, 12 (injection-class) **cannot be scanned out** — natural language has

@@ -40,7 +40,15 @@ def main():
         node = node["n"]
     s.check("deeply nested args terminate", isinstance(
         p.decide("Read", deep).action, str))
-    s.check("iter_strings is budget-bounded", len(list(iter_strings(deep))) <= 600)
+    s.check("iter_strings is budget-bounded",
+            len(list(iter_strings(deep))) <= 5000)
+    # a payload the sweep could not finish reading must not come back allowed:
+    # "no block rule matched" is not the same statement as "clean"
+    from airlock.policy import BLOCK as _B
+    huge = {f"k{i}": "z" * 64 for i in range(20000)}
+    d = p.decide("Read", huge)
+    s.check("an un-inspectable payload is refused, not waved through",
+            d.action == _B and "too large to inspect" in d.reason, d.reason)
 
     # escalation only tightens
     d = p.decide("mcp__d__read_note", {"name": "todo"})
