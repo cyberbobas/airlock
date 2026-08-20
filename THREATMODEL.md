@@ -50,6 +50,8 @@ non-interactive uninstall. Each now has a regression in `tests/test_regressions.
 | Feeds installed unsigned by default | the detection rules of a supply-chain tool are themselves a supply chain | signature required; `--allow-unsigned` is explicit |
 | `uninstall` raised `EOFError` without a tty | a traceback handed to someone removing the product, and unusable from CI | non-interactive callers are told to pass `-y` |
 | `@modelcontextprotocol/server-*` bypassed the out-of-gate rule | the commonest spelling of an MCP server fell through to a generic ask, which `guard` allows | namespace patterns added and tested for every launch form |
+| The rotation ledger protected the log but nothing protected the ledger | it was plain unsigned JSONL that nothing referenced: deleting a segment *and* its one ledger line reported `CHAIN INTACT across 46 records` while 14 had vanished | the ledger is chained and signed, and every handover is anchored by a record inside the log — the two now have to agree |
+| Rotation stopped rotating inside a busy second | second-resolution segment names collided, `dest.exists()` returned, and the log grew past its cap until the clock ticked | microsecond stamps that bump on collision and still sort chronologically |
 | The report counted allowed asks as "escalated to a block" | it over-claimed protection, in the direction that flatters the product | escalation and unattended-allow are counted and printed separately |
 | Backups collided within one second | the copy that lost was the original — the only one `uninstall` needs | backup names are made unique before writing |
 
@@ -80,6 +82,8 @@ Where a security tool degrades matters as much as what it blocks.
 | indicator feed hostile but installed | the bundled floor still fires; it can add, never remove | none |
 | audit log rotates | the chain continues into the new segment; the rotation is recorded in a ledger | none |
 | a whole audit segment is deleted or truncated | `verify` names the missing segment | none |
+| a ledger line is edited, removed or the ledger deleted | the ledger's own chain breaks, or the anchor record in the log names an entry the ledger no longer has | none |
+| two rotations land in the same second | segment names carry microseconds and bump on collision, so rotation keeps rotating | none |
 | audit log unwritable | the decision is still enforced | none |
 
 ## Known limits

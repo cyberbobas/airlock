@@ -228,6 +228,159 @@ def main():
     s.check("two backups in the same second get different names", b1 != b2, (b1, b2))
     s.check("the original backup survives", b1.read_text() == '{"v":1}', b1.read_text())
 
+    # === 8. the rotation ledger must protect itself ========================
+    # Was: audit.chain was plain, unsigned, unchained JSONL and nothing
+    # referenced it. Deleting a segment AND its one ledger line reported
+    # "CHAIN INTACT across 46 records" while 14 records had vanished; deleting
+    # the ledger outright reported intact too. A ledger that can be edited to
+    # match is not evidence, it is a formality.
+    def signed_home():
+        h = pathlib.Path(tempfile.mkdtemp(prefix="airlock-led-"))
+        e = dict(base, AIRLOCK_HOME=str(h), AIRLOCK_AUDIT_MAX_MB="0.005",
+                 AIRLOCK_SIGN="hmac")
+        subprocess.run(
+            [sys.executable, "-c",
+             "from airlock import audit\n"
+             "for i in range(60):\n"
+             "    audit.record('decision', source='t', tool=f't{i}',\n"
+             "                 decision='allow', effective='allow',\n"
+             "                 reason='routine ' + 'x'*40)"],
+            env=e, capture_output=True)
+        return h
+
+    def ledger_of(h):
+        return [json.loads(l) for l in
+                (h / "audit.chain").read_text().splitlines() if l.strip()]
+
+    def anchors_of(h):
+        out = []
+        for f in sorted(h.glob("audit*.jsonl")):
+            for line in f.read_text().splitlines():
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                if r.get("event") == "rotation":
+                    out.append(r)
+        return out
+
+    h = signed_home()
+    led = ledger_of(h)
+    # Sub-second rotation: a second-resolution segment name collided with the
+    # one just written, so `dest.exists()` returned and rotation stopped for
+    # the rest of that second — 60 records in one burst produced one segment
+    # instead of four, and the log quietly grew past AIRLOCK_AUDIT_MAX_MB.
+    s.check("rotation keeps rotating inside one second",
+            len(sorted(h.glob("audit-*.jsonl"))) >= 3,
+            sorted(f.name for f in h.glob("audit-*.jsonl")))
+    s.check("segment names still sort chronologically",
+            [f.name for f in sorted(h.glob("audit-*.jsonl"))]
+            == [e["segment"] for e in led],
+            ([f.name for f in sorted(h.glob("audit-*.jsonl"))],
+             [e["segment"] for e in led]))
+    s.check("rotation writes a ledger entry per handover", len(led) >= 2, len(led))
+    s.check("ledger entries are chained to each other",
+            all("prev" in e and "h" in e for e in led)
+            and all(led[i]["prev"] == led[i - 1]["h"] for i in range(1, len(led))),
+            led)
+    s.check("ledger entries are signed when signing is on",
+            all(e.get("sig") for e in led), [e.get("alg") for e in led])
+    anc = anchors_of(h)
+    s.check("every handover is anchored in the log itself",
+            len(anc) == len(led)
+            and {a["detail"].split("=", 1)[1] for a in anc} == {e["h"] for e in led},
+            (len(anc), len(led)))
+    s.check("a signed, rotated, untouched log verifies", verify(h).startswith("OK"),
+            verify(h))
+
+    # the attack that worked against the unprotected ledger
+    h = signed_home()
+    seg = sorted(h.glob("audit-*.jsonl"))[0]
+    keep = [l for l in (h / "audit.chain").read_text().splitlines()
+            if seg.name not in l]
+    (h / "audit.chain").write_text("\n".join(keep) + "\n")
+    seg.unlink()
+    v = verify(h)
+    s.check("deleting a segment AND its ledger line is detected",
+            v.startswith("FAIL") and "no longer lists" in v, v)
+
+    h = signed_home()
+    (h / "audit.chain").unlink()
+    v = verify(h)
+    s.check("deleting the whole ledger is detected",
+            v.startswith("FAIL") and "no longer lists" in v, v)
+
+    h = signed_home()
+    lines = (h / "audit.chain").read_text().splitlines()
+    (h / "audit.chain").write_text("\n".join(lines[:-1]) + "\n")
+    v = verify(h)
+    s.check("truncating the ledger's tail is detected",
+            v.startswith("FAIL") and "no longer lists" in v, v)
+
+    h = signed_home()
+    lines = (h / "audit.chain").read_text().splitlines()
+    del lines[1]
+    (h / "audit.chain").write_text("\n".join(lines) + "\n")
+    v = verify(h)
+    s.check("removing a line from the middle of the ledger is detected",
+            v.startswith("FAIL") and "removed or reordered" in v, v)
+
+    h = signed_home()
+    lines = (h / "audit.chain").read_text().splitlines()
+    e = json.loads(lines[1]); e["last"] = "0" * 16
+    lines[1] = json.dumps(e)
+    (h / "audit.chain").write_text("\n".join(lines) + "\n")
+    v = verify(h)
+    s.check("editing a ledger entry is detected",
+            v.startswith("FAIL") and "was edited" in v, v)
+
+    # an upgrade must not turn every existing install into a false alarm
+    h = pathlib.Path(tempfile.mkdtemp(prefix="airlock-legacy-"))
+    subprocess.run(
+        [sys.executable, "-c",
+         "import json\n"
+         "from airlock import audit\n"
+         "def old_ledger(segment, last):\n"
+         "    with open(audit.ledger_path(), 'a') as f:\n"
+         "        f.write(json.dumps({'segment': segment, 'last': last,\n"
+         "                            'at': audit._now()}) + chr(10))\n"
+         "    return None          # returning None skips the anchor, as 0.3.1 did\n"
+         "audit._ledger_append = old_ledger\n"
+         "for i in range(60):\n"
+         "    audit.record('decision', source='t', tool=f't{i}',\n"
+         "                 decision='allow', effective='allow',\n"
+         "                 reason='routine ' + 'x'*40)"],
+        env=dict(base, AIRLOCK_HOME=str(h), AIRLOCK_AUDIT_MAX_MB="0.005"),
+        capture_output=True)
+    legacy = ledger_of(h)
+    s.check("the legacy fixture really is unchained",
+            legacy and all("h" not in e for e in legacy), legacy[:1])
+    s.check("no anchors were written, as in 0.3.1", not anchors_of(h))
+    v = verify(h)
+    s.check("a pre-0.3.2 log with an unchained ledger still verifies",
+            v.startswith("OK"), v)
+
+    # and once the upgraded code rotates again, the new entries chain onto it
+    subprocess.run(
+        [sys.executable, "-c",
+         "from airlock import audit\n"
+         "for i in range(60):\n"
+         "    audit.record('decision', source='t', tool=f'u{i}',\n"
+         "                 decision='allow', effective='allow',\n"
+         "                 reason='routine ' + 'x'*40)"],
+        env=dict(base, AIRLOCK_HOME=str(h), AIRLOCK_AUDIT_MAX_MB="0.005"),
+        capture_output=True)
+    mixed = ledger_of(h)
+    s.check("new handovers chain on top of a legacy ledger",
+            len(mixed) > len(legacy) and any("h" in e for e in mixed), len(mixed))
+    v = verify(h)
+    s.check("a half-migrated ledger verifies", v.startswith("OK"), v)
+    lines = (h / "audit.chain").read_text().splitlines()
+    (h / "audit.chain").write_text("\n".join(lines[:-1]) + "\n")
+    v = verify(h)
+    s.check("tampering is still caught after a partial migration",
+            v.startswith("FAIL"), v)
+
     return s.report()
 
 

@@ -19,6 +19,20 @@ when the log has to stand up as proof rather than as a diagnostic.
 The file rotates by size, and the chain continues across rotations — the first
 record of a new file carries the last digest of the old one, so a whole rotated
 file cannot be dropped without leaving a gap that `airlock verify` reports.
+
+THE ROTATION LEDGER
+-------------------
+`audit.chain` records one line per handover. It is itself a hash chain (each
+entry carries `prev` + `h`, signed alongside the records when signing is on),
+and every handover is *anchored*: the first record written into the new live
+file names the ledger entry's digest, inside a chained field. So the two
+structures hold each other up — removing a ledger line contradicts the audit
+log, and editing the audit log to match breaks the record chain.
+
+That closes the obvious next move against a bare ledger: dropping a segment and
+the one ledger line that named it. It does not make the log tamper-*proof* — a
+same-privilege attacker holding the HMAC key can re-forge both. Off-box shipping
+or `AIRLOCK_SIGN=ed25519` with an external key is what raises that ceiling.
 """
 from __future__ import annotations
 import hashlib
@@ -38,6 +52,13 @@ except ImportError:  # pragma: no cover
 GENESIS = "0" * 16
 _CHAINED = ("ts", "event", "source", "server", "tool", "decision", "effective",
             "reason", "resource", "detail", "session", "args_digest", "flags", "prev")
+# The ledger chains over its own fields. `detail` on the anchor record carries
+# "ledger=<digest>" rather than a dedicated key, because adding a name to
+# _CHAINED would change every historical record's digest and invalidate logs
+# written by an older version.
+_LEDGER_CHAINED = ("segment", "last", "at", "prev")
+_ANCHOR = "ledger="
+_ROTATING = False
 MAX_MB = float(os.environ.get("AIRLOCK_AUDIT_MAX_MB", "64"))
 
 # fsync costs ~0.5ms. Paying it on every allowed call taxes the hot path for
@@ -207,21 +228,115 @@ def record(event: str, *, source: str, tool: str = "", server: str = "",
     return rec
 
 
-def chain_ledger() -> list[dict]:
-    """Every rotation handover ever recorded, oldest first."""
-    p = home() / "audit.chain"
+def ledger_path() -> Path:
+    return home() / "audit.chain"
+
+
+def ledger_digest(entry: dict) -> str:
+    payload = {k: entry.get(k) for k in _LEDGER_CHAINED}
+    blob = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
+    return hashlib.sha256(blob).hexdigest()[:16]
+
+
+def chain_ledger(*, strict: bool = False) -> list[dict]:
+    """Every rotation handover ever recorded, oldest first.
+
+    strict keeps unparseable lines as ``{"_bad": lineno}`` so `verify` can call
+    a corrupted ledger corrupted instead of silently reading past it.
+    """
+    p = ledger_path()
     if not p.exists():
         return []
     out = []
-    for line in p.read_text(encoding="utf-8").splitlines():
+    for lineno, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
         line = line.strip()
         if not line:
             continue
         try:
             out.append(json.loads(line))
         except Exception:
-            continue
+            if strict:
+                out.append({"_bad": lineno})
     return out
+
+
+def _ledger_append(segment: str, last: str) -> str | None:
+    """Record one handover, chained onto the previous one. Returns its digest."""
+    p = ledger_path()
+    try:
+        with open(p, "a+", encoding="utf-8") as f:
+            if fcntl:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                prior = chain_ledger()
+                prev = (prior[-1].get("h") or GENESIS) if prior else GENESIS
+                e = {"segment": segment, "last": last, "at": _now(), "prev": prev}
+                e["h"] = ledger_digest(e)
+                alg = signing.mode()
+                if alg != signing.ALG_NONE:
+                    sig = signing.sign(e["h"])
+                    if sig:
+                        e["alg"], e["sig"] = alg, sig
+                f.seek(0, os.SEEK_END)
+                f.write(json.dumps(e, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            finally:
+                if fcntl:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        os.chmod(p, 0o600)
+        return e["h"]
+    except Exception:
+        return None
+
+
+def verify_ledger() -> tuple[bool, str, set[str]]:
+    """Walk the rotation ledger. Return (ok, message, digests seen).
+
+    Checks three separate things, because they fail differently: the ledger's
+    own chain (a line was edited or removed from the middle), each named
+    segment still being present and ending where it said (a segment was deleted
+    or truncated), and the signatures when signing is on.
+    """
+    entries = chain_ledger(strict=True)
+    seen: set[str] = set()
+    h = home()
+    prev = GENESIS
+    for i, e in enumerate(entries, 1):
+        if "_bad" in e:
+            return False, f"rotation ledger line {e['_bad']}: not valid JSON", seen
+        if "h" not in e:                    # written before the ledger was chained
+            prev = GENESIS
+            continue
+        if e.get("prev") != prev:
+            if i == 1 and prev == GENESIS:
+                prev = e.get("prev")        # ledger predates chaining, or was pruned
+            else:
+                return False, (f"rotation ledger entry {i} ({e.get('segment')}): "
+                               f"expected prev={prev}, got {e.get('prev')} — a "
+                               f"handover record was removed or reordered"), seen
+        if ledger_digest(e) != e["h"]:
+            return False, (f"rotation ledger entry {i} ({e.get('segment')}) was "
+                           f"edited"), seen
+        if e.get("sig") and not signing.verify_one(e["h"], e["sig"],
+                                                   e.get("alg", "")):
+            return False, (f"rotation ledger entry {i} ({e.get('segment')}): "
+                           f"signature does not verify"), seen
+        prev = e["h"]
+        seen.add(e["h"])
+
+    for e in entries:
+        if "_bad" in e:
+            continue
+        seg = h / str(e.get("segment", ""))
+        if not seg.exists():
+            return False, (f"audit segment {e.get('segment')} is missing — "
+                           f"{e.get('at','?')} rotation was deleted"), seen
+        got = _last_hash_in(seg)
+        if got != e.get("last"):
+            return False, (f"audit segment {e.get('segment')} was truncated — its "
+                           f"last digest should be {e.get('last')}, found {got}"), seen
+    return True, "", seen
 
 
 def rotated_files() -> list[Path]:
@@ -234,14 +349,21 @@ def rotated_files() -> list[Path]:
 
 def _rotate_if_needed(path: Path) -> None:
     try:
-        if MAX_MB <= 0 or not path.exists():
+        if _ROTATING or MAX_MB <= 0 or not path.exists():
             return
         if path.stat().st_size < MAX_MB * 1024 * 1024:
             return
-        stamp = time.strftime("%Y%m%d%H%M%S", time.gmtime())
+        # Microseconds, not seconds. With a second-resolution name every
+        # rotation after the first one inside the same second hit an existing
+        # file and returned — so a busy second silently stopped rotating and
+        # the log grew past its cap. The suffix has to keep sorting in
+        # chronological order too, because segments are walked by name.
+        t = time.time()
+        stamp = time.strftime("%Y%m%d%H%M%S", time.gmtime(t)) + f"{int(t % 1 * 1e6):06d}"
         dest = path.with_name(f"audit-{stamp}.jsonl")
-        if dest.exists():
-            return
+        while dest.exists():
+            stamp = f"{int(stamp) + 1:020d}"
+            dest = path.with_name(f"audit-{stamp}.jsonl")
         os.rename(path, dest)
         os.chmod(dest, 0o600)
         # Append to the rotation ledger. Without it, deleting a whole segment is
@@ -250,11 +372,33 @@ def _rotate_if_needed(path: Path) -> None:
         # AND nothing was quietly removed from it".
         last = _last_hash_in(dest)
         if last:
-            with open(home() / "audit.chain", "a", encoding="utf-8") as led:
-                led.write(json.dumps({"segment": dest.name, "last": last,
-                                      "at": _now()}) + "\n")
+            digest = _ledger_append(dest.name, last)
+            if digest:
+                _anchor(dest.name, digest)
     except Exception:
         pass          # never let housekeeping break a decision
+
+
+def _anchor(segment: str, ledger_h: str) -> None:
+    """Open the new live file with a record naming the ledger entry.
+
+    A ledger nobody references can be shortened: drop the segment, drop its one
+    line, and the remaining ledger is self-consistent. The anchor makes that
+    trade impossible — the digest lives in a chained field of a normal audit
+    record, so removing it breaks the record chain instead.
+    """
+    global _ROTATING
+    if _ROTATING:
+        return
+    _ROTATING = True
+    try:
+        record("rotation", source="audit", effective="admit",
+               reason="audit log rotated", resource=segment,
+               extra=f"{_ANCHOR}{ledger_h}")
+    except Exception:
+        pass
+    finally:
+        _ROTATING = False
 
 
 def verify(path: Path | None = None, *, all_segments: bool = False
@@ -274,23 +418,17 @@ def verify(path: Path | None = None, *, all_segments: bool = False
 
     # A segment named in the rotation ledger that is gone, or whose tail no
     # longer matches what was recorded, means history was removed wholesale.
+    ledger_seen: set[str] = set()
     if all_segments:
-        h = home()
-        for entry in chain_ledger():
-            seg = h / str(entry.get("segment", ""))
-            if not seg.exists():
-                return False, 0, (f"audit segment {entry.get('segment')} is missing "
-                                  f"— {entry.get('at','?')} rotation was deleted")
-            got = _last_hash_in(seg)
-            if got != entry.get("last"):
-                return False, 0, (f"audit segment {entry.get('segment')} was "
-                                  f"truncated — its last digest should be "
-                                  f"{entry.get('last')}, found {got}")
+        ok, msg, ledger_seen = verify_ledger()
+        if not ok:
+            return False, 0, msg
 
     prev = GENESIS
     n = 0
     unsigned = 0
     badsig = 0
+    anchors: list[tuple[str, str]] = []      # (segment named, ledger digest)
     for p in files:
         first = True
         for lineno, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
@@ -326,8 +464,21 @@ def verify(path: Path | None = None, *, all_segments: bool = False
                     badsig += 1
             else:
                 unsigned += 1
+            if rec.get("event") == "rotation" and str(rec.get("detail", "")).startswith(_ANCHOR):
+                anchors.append((str(rec.get("resource", "")),
+                                str(rec["detail"])[len(_ANCHOR):]))
             prev = rec["h"]
             first = False
+
+    # Every handover the log itself vouches for must still be in the ledger.
+    # This is the half that catches "delete the segment AND its ledger line".
+    if all_segments:
+        for segment, digest in anchors:
+            if digest not in ledger_seen:
+                return False, n, (
+                    f"the audit log records a rotation to {segment} that the "
+                    f"rotation ledger no longer lists (entry {digest}) — "
+                    f"audit.chain was truncated, pruned or deleted")
 
     msg = f"chain intact across {n} records"
     if len(files) > 1:

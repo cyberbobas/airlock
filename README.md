@@ -214,16 +214,30 @@ airlock report --markdown         # the page you send your manager
 
 Every record carries `prev` + `h`. Editing or deleting any past line breaks
 every digest after it. The chain **continues across rotations** — a new segment
-starts from the previous one's last digest — and every rotation is written to a
-ledger, so deleting or truncating a whole segment is reported too:
+starts from the previous one's last digest — and every rotation is written to
+`audit.chain`, so deleting or truncating a whole segment is reported too:
 
 ```
 $ airlock verify
-  CHAIN BROKEN  audit segment audit-20260820081301.jsonl is missing
+  CHAIN BROKEN  audit segment audit-20260820081301837476.jsonl is missing
                 — 2026-08-20T08:13:01Z rotation was deleted
 ```
 
-That is tamper *evidence*.
+The ledger is not a soft spot: it is itself a hash chain, signed alongside the
+records when signing is on, and each handover is **anchored** by a record in the
+new segment naming that ledger entry. Removing a ledger line therefore
+contradicts the log, and editing the log to agree breaks the record chain:
+
+```
+$ airlock verify           # after deleting a segment *and* its ledger line
+  CHAIN BROKEN  the audit log records a rotation to audit-…jsonl that the
+                rotation ledger no longer lists (entry 03c16ffb6005e035)
+                — audit.chain was truncated, pruned or deleted
+```
+
+That is tamper *evidence*. It is not tamper-proofing: an attacker holding the
+HMAC key can re-forge both structures. What raises that ceiling is shipping the
+log off the box, or `AIRLOCK_SIGN=ed25519` with the private key held elsewhere.
 
 For attribution, enable signing:
 
