@@ -127,6 +127,21 @@ def main():
             monitor.run(once=True, out=buf2) == 0 and "AIRLOCK MONITOR" in buf2.getvalue(),
             buf2.getvalue()[:80])
 
+    # ---- demo ------------------------------------------------------------
+    # The pip-installed first impression: it must run self-contained (bundled
+    # skill + server, no repo checkout) and actually block the exfil calls.
+    import subprocess
+    demo_home = Path(tempfile.mkdtemp(prefix="airlock-demo-t-"))
+    r = subprocess.run(
+        [sys.executable, "-m", "airlock.cli", "demo", "--no-color"],
+        env=dict(os.environ, AIRLOCK_HOME=str(demo_home), AIRLOCK_NOTIFY="0",
+                 PYTHONPATH=str(Path(__file__).resolve().parents[1])),
+        capture_output=True, text=True)
+    s.check("airlock demo runs self-contained and exits 0",
+            r.returncode == 0, r.stderr[-300:])
+    s.check("airlock demo blocks the exfil calls and verifies the chain",
+            "BLOCK" in r.stdout and "CHAIN INTACT" in r.stdout, r.stdout[-300:])
+
     return s.report()
 
 

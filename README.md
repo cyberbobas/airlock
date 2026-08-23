@@ -35,6 +35,12 @@ prompt when running non-interactively.
 
 Requires Python 3.11+. macOS and Linux. One dependency (PyYAML).
 
+**See it work in one command** — no setup, no config, nothing of yours touched:
+
+```bash
+airlock demo    # a poisoned skill tries to steal your SSH key; watch it get refused
+```
+
 <details>
 <summary><strong>Verified end to end</strong> — clean venv → install → init → doctor → demo → uninstall</summary>
 
@@ -437,7 +443,7 @@ file.
 | `allow` · `check` · `log` · `monitor` · `report` | daily |
 | `scan` · `pins` · `contracts` · `update` | admission |
 | `verify` · `export` | evidence |
-| `bench` | overhead |
+| `bench` · `demo` | overhead / try it |
 | `mcp` · `hook` · `askd` | runtime |
 
 ## Config

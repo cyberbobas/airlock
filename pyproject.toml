@@ -40,7 +40,8 @@ airlock-hook = "airlock.cc_hook:guarded"
 airlock-askd = "airlock.askd:main"
 
 [tool.setuptools]
-packages = ["airlock"]
+packages = ["airlock", "airlock.examples"]
 
 [tool.setuptools.package-data]
 airlock = ["profiles/*.yaml", "data/*.json"]
+"airlock.examples" = ["poisoned_skill/*.md", "*.py"]

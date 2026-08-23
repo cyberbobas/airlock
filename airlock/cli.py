@@ -5,7 +5,7 @@
   admission scan · pins · contracts · update
   evidence  verify · export
   runtime   mcp · hook · askd
-  proof     bench
+  proof     bench · demo
 """
 from __future__ import annotations
 import argparse
@@ -429,6 +429,11 @@ def cmd_profile(a) -> int:
     return 0
 
 
+def cmd_demo(a) -> int:
+    from . import demo
+    return demo.run(color=not a.no_color)
+
+
 def cmd_monitor(a) -> int:
     return monitormod.run(interval=a.interval, once=a.once)
 
@@ -726,6 +731,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--once", action="store_true",
                    help="render a single snapshot and exit (no live loop)")
     s.set_defaults(fn=cmd_monitor)
+
+    s = sub.add_parser("demo", help="watch a key-theft get refused (self-contained)")
+    s.add_argument("--no-color", action="store_true")
+    s.set_defaults(fn=cmd_demo)
 
     sub.add_parser("verify", help="check the audit hash chain").set_defaults(fn=cmd_verify)
     s = sub.add_parser("doctor", help="what is actually enforcing?")
