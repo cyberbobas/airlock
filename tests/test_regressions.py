@@ -204,16 +204,17 @@ def main():
     os.environ["AIRLOCK_HOME"] = str(h)
     from airlock import notify
     now = time.time()
-    first = notify._recently_sent("Read|secret", now)
-    second = notify._recently_sent("Read|secret", now + 1)
+    suppressed = lambda k, t: notify._admit(k, t)[0] == "skip"
+    first = suppressed("Read|secret", now)
+    second = suppressed("Read|secret", now + 1)
     s.check("first notification is not suppressed", not first)
     s.check("a repeat within the cooldown is suppressed (persisted to disk)", second)
     s.check("debounce state is on disk, not in memory",
             (h / "notify.state").exists())
     s.check("a different reason is not suppressed",
-            not notify._recently_sent("Read|different", now + 1))
+            not suppressed("Read|different", now + 1))
     s.check("the cooldown does expire",
-            not notify._recently_sent("Read|secret", now + notify.COOLDOWN + 1))
+            not suppressed("Read|secret", now + notify.COOLDOWN + 1))
 
     # === 7. backups must never overwrite each other =======================
     # Was: second-resolution filenames collided, and the copy that lost was the

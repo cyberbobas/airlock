@@ -280,6 +280,36 @@ def main():
             "tty" not in ask.auto_backends())
     s.check("ask channel is describable", isinstance(ask.describe_channel(), str))
 
+    # ---- 11. block notifications are rate-capped, not a wall of toasts --
+    from airlock import notify
+    nhome = pathlib.Path(tempfile.mkdtemp(prefix="airlock-notify-"))
+    os.environ["AIRLOCK_HOME"] = str(nhome)
+    os.environ["AIRLOCK_NOTIFY"] = "1"
+    emitted = []
+    orig_emit, orig_cap = notify._emit, notify.CAP
+    orig_cd, orig_win = notify.COOLDOWN, notify.WINDOW
+    notify._emit = lambda title, body: emitted.append((title, body))
+    notify.CAP, notify.COOLDOWN, notify.WINDOW = 3, 100.0, 1000.0
+    try:
+        for i in range(12):                       # 12 DISTINCT blocks in a burst
+            notify.blocked(tool=f"Tool{i}", reason=f"reason {i}", resource=f"/x/{i}")
+        # the same block repeated does not toast again (per-key cooldown)
+        before = len(emitted)
+        for _ in range(5):
+            notify.blocked(tool="Tool0", reason="reason 0", resource="/x/0")
+        repeat_added = len(emitted) - before
+    finally:
+        notify._emit, notify.CAP = orig_emit, orig_cap
+        notify.COOLDOWN, notify.WINDOW = orig_cd, orig_win
+    detailed = [t for t, _ in emitted if t == "Airlock blocked a call"]
+    aggregate = [t for t, _ in emitted if t == "Airlock blocked several calls"]
+    s.check("a burst of distinct blocks is capped to CAP detailed toasts",
+            len(detailed) == 3, len(detailed))
+    s.check("the rest fold into a single summary toast, not a wall",
+            len(aggregate) == 1 and len(emitted) == 4, emitted)
+    s.check("a repeated identical block does not re-toast",
+            repeat_added == 0, repeat_added)
+
     return s.report()
 
 

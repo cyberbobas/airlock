@@ -158,6 +158,10 @@ how many times you were actually interrupted, and how many repeats a remembered
 answer silenced. Absolute blocks and scan escalations are decided before an ask
 is ever raised, so remembering an answer can never resurrect something forbidden.
 
+Block notifications are capped the same way: the same block won't re-toast within
+a cooldown, and a burst of *different* blocks past `AIRLOCK_NOTIFY_MAX` folds into
+a single "N more blocked — `airlock report`" summary instead of a wall of toasts.
+
 **A grant can never lift an absolute block.** Secret paths, `rm -rf /`, cloud
 metadata, known exfil collectors and download-and-execute are checked *before*
 grants, against every argument. `airlock allow` will tell you it refused rather
@@ -465,7 +469,10 @@ file.
 * `AIRLOCK_ASK_REMEMBER=300` — seconds an answered `ask` is reused before the
   same question prompts again (0 to always re-ask).
 * `AIRLOCK_NOTIFY=0` — no desktop notification on block.
-* `AIRLOCK_NOTIFY_COOLDOWN=20` — seconds between repeat block notifications.
+* `AIRLOCK_NOTIFY_COOLDOWN=20` — seconds before the *same* block notifies again.
+* `AIRLOCK_NOTIFY_MAX=5` · `AIRLOCK_NOTIFY_WINDOW=60` — at most this many block
+  toasts per window; a burst of *different* blocks past that folds into one
+  "N more blocked" summary (0 disables the cap).
 * `AIRLOCK_FAIL_OPEN=1` · `AIRLOCK_STRICT=1`
 * `AIRLOCK_SIGN=hmac|ed25519` · `AIRLOCK_SIGN_KEY` · `AIRLOCK_VERIFY_KEY`
 * `AIRLOCK_AUDIT_FSYNC=critical|always|never` · `AIRLOCK_AUDIT_MAX_MB=64`
