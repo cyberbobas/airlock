@@ -16,8 +16,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import (audit, batch, bench as benchmod, config, contracts, export as
-               exportmod, feed, grants, install, pins, report as reportmod, scan)
+from . import (__version__, audit, batch, bench as benchmod, config, contracts,
+               export as exportmod, feed, grants, install, pins, report as
+               reportmod, scan)
 from .policy import RANK, Policy
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -552,6 +553,8 @@ def _exec_module(mod: str, argv: list[str]) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="airlock",
                                 description="Runtime firewall for AI coding agents.")
+    p.add_argument("--version", action="version",
+                   version=f"airlock {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("scan", help="static admission scan of a skill/MCP folder")
