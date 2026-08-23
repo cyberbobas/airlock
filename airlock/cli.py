@@ -1,7 +1,7 @@
 """airlock — one entry point for the whole tool.
 
-  setup     init · uninstall · profile · doctor
-  daily     allow · check · log · report
+  setup     init · uninstall · profile · policy · doctor
+  daily     allow · check · log · monitor · report
   admission scan · pins · contracts · update
   evidence  verify · export
   runtime   mcp · hook · askd
@@ -17,8 +17,8 @@ import sys
 from pathlib import Path
 
 from . import (__version__, audit, batch, bench as benchmod, config, contracts,
-               export as exportmod, feed, grants, install, pins, report as
-               reportmod, scan)
+               export as exportmod, feed, grants, install, monitor as monitormod,
+               pins, propose as proposemod, report as reportmod, scan)
 from .policy import RANK, Policy
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -429,6 +429,47 @@ def cmd_profile(a) -> int:
     return 0
 
 
+def cmd_monitor(a) -> int:
+    return monitormod.run(interval=a.interval, once=a.once)
+
+
+def cmd_propose(a) -> int:
+    """Derive the narrowest policy that still covers what agents already did."""
+    prop = proposemod.build(days=a.days, min_count=a.min_count)
+    if not prop.allowed and not prop.grants:
+        print("  no allowed calls in the audit log yet — run in yolo/observe "
+              "for a while, then propose")
+        return 1
+    tools = len({g["tool"] for g in prop.grants})
+    print(f"\n  {_C['b']}POLICY PROPOSAL{_C['0']}  {_C['d']}from {prop.allowed} "
+          f"allowed call(s) over {a.days}d{_C['0']}")
+    print(f"  {_C['l']}{len(prop.grants)}{_C['0']} least-privilege grant(s) across "
+          f"{tools} tool(s)")
+    if prop.risky:
+        print(f"  {_C['h']}{sum(prop.risky.values())}{_C['0']} high-flag call(s) "
+              f"NOT whitelisted — review: {', '.join(list(prop.risky)[:5])}")
+    if prop.gated:
+        print(f"  {_C['m']}{sum(prop.gated.values())}{_C['0']} already-gated "
+              f"call(s) left as they are")
+    if prop.unscopable:
+        print(f"  {_C['d']}{sum(prop.unscopable.values())} allowed call(s) had no "
+              f"path/host to scope — not proposed{_C['0']}")
+    if prop.truncated:
+        print(f"  {_C['d']}{prop.truncated} extra match(es) dropped by the "
+              f"per-tool cap{_C['0']}")
+    print()
+    if a.apply:
+        pol = _policy()
+        added, skipped = proposemod.apply(pol, prop)
+        print(f"  {_C['l']}✓{_C['0']} applied {added} grant(s) to {pol.path}"
+              + (f" ({skipped} already present)" if skipped else ""))
+        print(f"  {_C['d']}now make them bite: airlock profile default{_C['0']}\n")
+    else:
+        print(proposemod.to_yaml(prop))
+        print(f"  {_C['d']}review, then: airlock policy propose --apply{_C['0']}\n")
+    return 0
+
+
 def cmd_allow(a) -> int:
     pol = _policy()
     if a.target == "last":
@@ -632,6 +673,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--force", action="store_true")
     s.set_defaults(fn=cmd_profile)
 
+    s = sub.add_parser("policy", help="work with the active policy")
+    psub = s.add_subparsers(dest="paction", required=True)
+    pp = psub.add_parser("propose",
+                         help="derive least-privilege grants from the audit log")
+    pp.add_argument("--days", type=int, default=30,
+                    help="how far back to read the audit log")
+    pp.add_argument("--min-count", type=int, default=1, dest="min_count",
+                    help="only propose for tools seen at least this many times")
+    pp.add_argument("--apply", action="store_true",
+                    help="write the proposed grants into your policy")
+    pp.set_defaults(fn=cmd_propose)
+
     s = sub.add_parser("allow", help="permit what was just blocked")
     s.add_argument("target", nargs="?", default="last",
                    help="'last', 'recent', 'list', 'revoke', or a server id")
@@ -666,6 +719,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--allow-unsigned", action="store_true",
                    help="install a feed that carries no verifiable signature")
     s.set_defaults(fn=cmd_update)
+
+    s = sub.add_parser("monitor", help="live screen of decisions as they happen")
+    s.add_argument("--interval", type=float, default=0.5,
+                   help="seconds between refreshes")
+    s.add_argument("--once", action="store_true",
+                   help="render a single snapshot and exit (no live loop)")
+    s.set_defaults(fn=cmd_monitor)
 
     sub.add_parser("verify", help="check the audit hash chain").set_defaults(fn=cmd_verify)
     s = sub.add_parser("doctor", help="what is actually enforcing?")
