@@ -19,7 +19,7 @@ that `airlock update` fetches from. Two things live here:
 # 1. edit feed.json (bump `version`, add patterns / block_hosts)
 # 2. sign it with the private feed key
 AIRLOCK_FEED_KEY=<secret> python3 ../tools/sign_feed.py feed.json
-# 3. commit + push to airlock-agent/indicators; the raw URL is the DEFAULT_URL
+# 3. commit + push to airlock-agent/indicators; the raw URL is HOSTED_FEED_URL
 ```
 
 ## Consuming it (users)

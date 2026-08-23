@@ -104,6 +104,9 @@ directory glob instead of forty files, one host per egress tool. It only ever
 proposes *allows*, and only for calls that were allowed and carried no
 high-severity flag: anything blocked, asked about, or flagged for reaching a
 secret or a collector is reported for you to see, never silently whitelisted.
+`--apply` **holds back bare shell-tool grants** — a blanket "allow the shell" is
+too broad to write unattended — and tells you to review them; pass
+`--include-shell` to write those too.
 
 Prefer to watch it live? `airlock monitor` is a full-screen board of decisions as
 they happen — allow, ask, block, hold — so the gate is something you can see
@@ -186,8 +189,8 @@ way. Only Claude Code's own built-in tools currently get the second gate. We
 would rather say that than have you find out during a rollout.
 
 `airlock init` finds the MCP servers each agent actually runs — not just a
-project `.mcp.json`, but the Cursor project/home configs, Windsurf, Cline,
-Continue and Claude Desktop. It deliberately leaves Claude Code's live
+project `.mcp.json`, but the Cursor project/home configs, Windsurf, Cline
+and Claude Desktop. It deliberately leaves Claude Code's live
 `~/.claude.json` alone: those MCP calls already go through the PreToolUse hook
 (same policy, holds and contracts), so wrapping them would only double-gate a
 file Claude Code rewrites out from under us. `airlock doctor` lists any server
