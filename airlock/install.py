@@ -283,15 +283,61 @@ def remove_hook(res: Result) -> None:
                 b or "")
 
 
-# ---- .mcp.json ---------------------------------------------------------
+# ---- MCP config stores -------------------------------------------------
+# Every place an agent on this box actually keeps its MCP server list. "init
+# closes your MCP servers" was only ever true for a project .mcp.json; the same
+# person's Cursor, Windsurf, Cline and Continue servers sat wide open.
+#
+# Deliberately NOT here: Claude Code's global ~/.claude.json. Its MCP calls are
+# already gated by the PreToolUse hook (cc_hook applies the full policy, plus
+# holds and contracts, to every `mcp__server__tool`), so wrapping those servers
+# through the proxy only double-gates them — and ~/.claude.json is a live file
+# Claude Code rewrites on its own, which would race our edit and could strip the
+# `_airlock_original` key uninstall needs to put it back. The hook covers Claude
+# Code; the proxy covers the agents that have no hook.
+def mcp_stores(project: Path) -> list[tuple[str, Path]]:
+    """(label, path) for every known MCP config that exists on this box."""
+    home = Path.home()
+    cands = [
+        ("Claude Code (project)", project / ".mcp.json"),
+        ("Claude Code",           home / ".claude" / "mcp.json"),
+        ("Cursor (project)",      project / ".cursor" / "mcp.json"),
+        ("Cursor",                home / ".cursor" / "mcp.json"),
+        ("Windsurf",              home / ".codeium" / "windsurf" / "mcp_config.json"),
+        ("Cline",                 home / ".config" / "Code" / "User" / "globalStorage"
+                                  / "saoudrizwan.claude-dev" / "settings"
+                                  / "cline_mcp_settings.json"),
+        ("Cline (macOS)",         home / "Library" / "Application Support" / "Code"
+                                  / "User" / "globalStorage" / "saoudrizwan.claude-dev"
+                                  / "settings" / "cline_mcp_settings.json"),
+        ("Continue",              home / ".continue" / "config.json"),
+        ("Claude Desktop (macOS)", home / "Library" / "Application Support" / "Claude"
+                                   / "claude_desktop_config.json"),
+        ("Claude Desktop",        home / ".config" / "Claude"
+                                  / "claude_desktop_config.json"),
+    ]
+    return [(label, p) for label, p in cands if p.exists()]
+
+
 def mcp_config_paths(project: Path) -> list[Path]:
-    cands = [project / ".mcp.json",
-             Path.home() / ".claude" / "mcp.json",
-             Path.home() / ".cursor" / "mcp.json",
-             Path.home() / "Library" / "Application Support" / "Claude"
-             / "claude_desktop_config.json",
-             Path.home() / ".config" / "Claude" / "claude_desktop_config.json"]
-    return [p for p in cands if p.exists()]
+    """Just the paths, for callers that do not need the store labels."""
+    return [p for _, p in mcp_stores(project)]
+
+
+def _server_maps(data: dict) -> list[dict]:
+    """Every dict-of-servers inside a loaded config.
+
+    Each known store keeps them at the top level under `mcpServers` (or the
+    snake_case `mcp_servers` a few tools emit). Returned maps are live
+    references into `data`, so mutating them and writing `data` back persists
+    the edit.
+    """
+    maps: list[dict] = []
+    for key in ("mcpServers", "mcp_servers"):
+        m = data.get(key)
+        if isinstance(m, dict):
+            maps.append(m)
+    return maps
 
 
 def _is_wrapped(spec: dict) -> bool:
@@ -312,46 +358,49 @@ def _is_wrapped(spec: dict) -> bool:
                             module="airlock.mcp_proxy")
 
 
-def wrap_servers(path: Path, res: Result, unwrap: bool = False) -> int:
+def wrap_servers(path: Path, res: Result, unwrap: bool = False, *,
+                 label: str = "") -> int:
     data = _load_json(path)
-    servers = data.get("mcpServers") or data.get("mcp_servers")
-    if not isinstance(servers, dict) or not servers:
+    maps = _server_maps(data)
+    if not maps:
         return 0
     n = 0
-    for name, spec in servers.items():
-        if not isinstance(spec, dict) or not spec.get("command"):
-            continue
-        if unwrap:
-            if not _is_wrapped(spec):
+    for servers in maps:
+        for name, spec in list(servers.items()):
+            if not isinstance(spec, dict) or not spec.get("command"):
                 continue
-            orig = spec.pop("_airlock_original", None)
-            if not orig:
-                res.note(f"{path}: '{name}' is wrapped but has no saved original; "
-                         f"left alone — edit it by hand")
-                continue
-            spec["command"] = orig.get("command")
-            spec["args"] = orig.get("args", [])
-            if not spec["args"]:
-                spec.pop("args", None)
-            n += 1
-        else:
-            if _is_wrapped(spec):
-                continue
-            spec["_airlock_original"] = {"command": spec["command"],
-                                         "args": list(spec.get("args") or [])}
-            inner = [spec["command"], *(spec.get("args") or [])]
-            wrap = mcp_command()
-            spec["command"] = wrap[0]
-            spec["args"] = [*wrap[1:], "--server-id", name, "--", *inner]
-            n += 1
+            if unwrap:
+                if not _is_wrapped(spec):
+                    continue
+                orig = spec.pop("_airlock_original", None)
+                if not orig:
+                    res.note(f"{path}: '{name}' is wrapped but has no saved "
+                             f"original; left alone — edit it by hand")
+                    continue
+                spec["command"] = orig.get("command")
+                spec["args"] = orig.get("args", [])
+                if not spec["args"]:
+                    spec.pop("args", None)
+                n += 1
+            else:
+                if _is_wrapped(spec):
+                    continue
+                spec["_airlock_original"] = {"command": spec["command"],
+                                             "args": list(spec.get("args") or [])}
+                inner = [spec["command"], *(spec.get("args") or [])]
+                wrap = mcp_command()
+                spec["command"] = wrap[0]
+                spec["args"] = [*wrap[1:], "--server-id", name, "--", *inner]
+                n += 1
     if n:
+        tag = f"{label}: " if label else ""
         b = _backup(path)
         if unwrap and _restore_verbatim(path, data):
-            res.add(path, f"unwrapped {n} MCP server{'' if n == 1 else 's'} "
+            res.add(path, f"{tag}unwrapped {n} MCP server{'' if n == 1 else 's'} "
                           f"(restored the original file byte-for-byte)", b or "")
         else:
             _save_json(path, data)
-            res.add(path, f"{'wrapped' if not unwrap else 'unwrapped'} {n} MCP "
+            res.add(path, f"{tag}{'wrapped' if not unwrap else 'unwrapped'} {n} MCP "
                           f"server{'' if n == 1 else 's'}", b or "")
     return n
 
@@ -365,12 +414,28 @@ def init(profile: str = config.DEFAULT_PROFILE, *, project: Path | None = None,
         install_hook(res)
     if mcp:
         project = project or config.workspace()
-        paths = mcp_config_paths(project)
-        if not paths:
-            res.note("no .mcp.json found — nothing to wrap yet. Re-run "
-                     "`airlock init` after adding an MCP server.")
-        for p in paths:
-            wrap_servers(p, res)
+        stores = mcp_stores(project)
+        if not stores:
+            res.note("no MCP config found in any known store (Claude Code, "
+                     "Cursor, Windsurf, Cline, Continue, Claude Desktop) — "
+                     "nothing to wrap yet. Re-run `airlock init` once you have "
+                     "added an MCP server.")
+        for label, p in stores:
+            wrap_servers(p, res, label=label)
+    return res
+
+
+def fix(*, project: Path | None = None) -> Result:
+    """What `airlock doctor --fix` runs: close the gaps doctor warns about —
+    wire the PreToolUse/PostToolUse hook if it is missing, and wrap every
+    ungated MCP server across every known store. It does NOT write policy;
+    `airlock init` owns that, and doctor already reports a missing one.
+    """
+    res = Result()
+    install_hook(res)
+    project = project or config.workspace()
+    for label, p in mcp_stores(project):
+        wrap_servers(p, res, label=label)
     return res
 
 
@@ -378,8 +443,8 @@ def uninstall(*, project: Path | None = None, purge: bool = False) -> Result:
     res = Result()
     remove_hook(res)
     project = project or config.workspace()
-    for p in mcp_config_paths(project):
-        wrap_servers(p, res, unwrap=True)
+    for label, p in mcp_stores(project):
+        wrap_servers(p, res, unwrap=True, label=label)
     h = config.home()
     if purge:
         if h.exists():

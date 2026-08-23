@@ -179,6 +179,62 @@ def main():
             "_airlock_original" not in
             json.loads(mcp2.read_text())["mcpServers"]["repo"])
 
+    # ---- 6c. init covers the hookless agents' stores, leaves ~/.claude.json --
+    # "init closes your MCP servers" used to mean a project .mcp.json only. The
+    # same person's Cursor project/home configs, Windsurf, Cline and Continue
+    # sat wide open. init now walks those. It deliberately does NOT touch the
+    # live ~/.claude.json: Claude Code's MCP is already gated by the hook, and
+    # rewriting a file Claude Code owns would race it and could strip the key
+    # uninstall needs.
+    h3 = pathlib.Path(tempfile.mkdtemp(prefix="airlock-stores-"))
+    (h3 / ".claude").mkdir()
+    work = h3 / "work"; work.mkdir()
+    wkey = str(work.resolve())
+    (work / ".cursor").mkdir()
+    (work / ".cursor" / "mcp.json").write_text(json.dumps(
+        {"mcpServers": {"cur": {"command": "npx", "args": ["cursor-srv"]}}}))
+    (h3 / ".cursor").mkdir()
+    (h3 / ".cursor" / "mcp.json").write_text(json.dumps(
+        {"mcpServers": {"curhome": {"command": "npx", "args": ["home-srv"]}}}))
+    claude_json = {"projects": {
+        wkey: {"mcpServers": {"cc": {"command": "uvx", "args": ["cc-srv"]}}}}}
+    (h3 / ".claude.json").write_text(json.dumps(claude_json))
+    env3 = _env(h3 / ".airlock", work)
+    env3["HOME"] = str(h3)
+    env3["CLAUDE_SETTINGS"] = str(h3 / ".claude" / "settings.json")
+
+    _cli(["init", "--profile", "default"], env3)
+    cur = json.loads((work / ".cursor" / "mcp.json").read_text())["mcpServers"]["cur"]
+    curhome = json.loads((h3 / ".cursor" / "mcp.json").read_text())["mcpServers"]["curhome"]
+    s.check("init wraps a Cursor project store", "_airlock_original" in cur, cur)
+    s.check("init wraps a Cursor home store", "_airlock_original" in curhome, curhome)
+    s.check("init leaves the live ~/.claude.json untouched (hook covers it)",
+            json.loads((h3 / ".claude.json").read_text()) == claude_json,
+            (h3 / ".claude.json").read_text()[:200])
+
+    # doctor --fix picks up a server added after init
+    (work / ".cursor" / "mcp.json").write_text(json.dumps({"mcpServers": {
+        "cur": cur,                              # already wrapped
+        "late": {"command": "npx", "args": ["added-later"]}}}))
+    d = _cli(["doctor", "--fix"], env3)
+    late = json.loads((work / ".cursor" / "mcp.json").read_text())["mcpServers"]["late"]
+    s.check("doctor --fix wraps a newly added ungated server",
+            "_airlock_original" in late, d.stdout[-300:])
+
+    du = _cli(["doctor"], env3)
+    s.check("doctor then reports all stores gated",
+            "not behind Airlock" not in du.stdout, du.stdout[-300:])
+    s.check("doctor never flags ~/.claude.json as ungated",
+            "claude.json" not in du.stdout.lower(), du.stdout[-300:])
+
+    _cli(["uninstall", "-y"], env3)
+    s.check("uninstall unwraps across every wrapped store",
+            "_airlock_original" not in
+            json.loads((work / ".cursor" / "mcp.json").read_text())["mcpServers"]["cur"]
+            and "_airlock_original" not in
+            json.loads((h3 / ".cursor" / "mcp.json").read_text())["mcpServers"]["curhome"],
+            (work / ".cursor" / "mcp.json").read_text()[:200])
+
     # ---- 7. the report exists and says something --------------------
     from airlock import audit
     os.environ["AIRLOCK_HOME"] = str(fake / ".airlock")

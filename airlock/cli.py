@@ -220,6 +220,17 @@ def cmd_verify(a) -> int:
 
 def cmd_doctor(a) -> int:
     """Tell the operator what is actually enforcing, not what is installed."""
+    if getattr(a, "fix", False):
+        fixres = install.fix(project=config.workspace())
+        if fixres.changes:
+            print(f"\n  {_C['b']}FIXED{_C['0']}")
+            for c in fixres.changes:
+                print(f"  {_C['l']}✓{_C['0']} {c.what}  {_C['d']}{c.path}{_C['0']}")
+        else:
+            print(f"\n  {_C['d']}doctor --fix: nothing to wire — already covered"
+                  f"{_C['0']}")
+        for n in fixres.notes:
+            print(f"  {_C['d']}· {n}{_C['0']}")
     rows = []
     pol_path, why, proj = config.resolve_policy_chain()
     try:
@@ -303,21 +314,32 @@ def cmd_doctor(a) -> int:
     rows.append(("ok", "Claude Code PreToolUse hook is wired") if wired else
                 ("warn", f"hook not in {settings} — native tools are ungated "
                          f"(run: airlock init)"))
-    mcps = install.mcp_config_paths(config.workspace())
-    ungated = []
-    for mp in mcps:
+    stores = install.mcp_stores(ws)
+    ungated, gated = [], 0
+    for label, mp in stores:
         try:
             data = json.loads(mp.read_text())
         except Exception:
             continue
-        for name, spec in (data.get("mcpServers") or {}).items():
-            if not install._is_wrapped(spec or {}):
-                ungated.append(f"{name} ({mp.name})")
+        for servers in install._server_maps(data):
+            for name, spec in servers.items():
+                if not isinstance(spec, dict) or not spec.get("command"):
+                    continue
+                if install._is_wrapped(spec):
+                    gated += 1
+                else:
+                    ungated.append(f"{name} [{label}]")
     if ungated:
-        rows.append(("warn", f"MCP servers not behind Airlock: {', '.join(ungated[:6])}"
-                             f" (run: airlock init)"))
-    elif mcps:
-        rows.append(("ok", f"all MCP servers in {len(mcps)} config(s) are gated"))
+        more = f" (+{len(ungated) - 6} more)" if len(ungated) > 6 else ""
+        rows.append(("warn", f"MCP servers not behind Airlock: "
+                             f"{', '.join(ungated[:6])}{more}"
+                             f" — run: airlock doctor --fix"))
+    elif gated:
+        rows.append(("ok", f"all {gated} MCP server(s) across {len(stores)} "
+                           f"store(s) are gated"))
+    elif stores:
+        rows.append(("ok", f"{len(stores)} MCP store(s) present, no servers "
+                           f"defined yet"))
 
     if not sys.stdout.isatty():
         for k, m in rows:
@@ -646,7 +668,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_update)
 
     sub.add_parser("verify", help="check the audit hash chain").set_defaults(fn=cmd_verify)
-    sub.add_parser("doctor", help="what is actually enforcing?").set_defaults(fn=cmd_doctor)
+    s = sub.add_parser("doctor", help="what is actually enforcing?")
+    s.add_argument("--fix", action="store_true",
+                   help="wrap any ungated MCP servers and wire a missing hook")
+    s.set_defaults(fn=cmd_doctor)
 
     for name, mod in (("mcp", "airlock.mcp_proxy"), ("hook", "airlock.cc_hook"),
                       ("askd", "airlock.askd")):

@@ -139,6 +139,20 @@ If your team is on mixed agents: every agent's **MCP** traffic is gated the same
 way. Only Claude Code's own built-in tools currently get the second gate. We
 would rather say that than have you find out during a rollout.
 
+`airlock init` finds the MCP servers each agent actually runs — not just a
+project `.mcp.json`, but the Cursor project/home configs, Windsurf, Cline,
+Continue and Claude Desktop. It deliberately leaves Claude Code's live
+`~/.claude.json` alone: those MCP calls already go through the PreToolUse hook
+(same policy, holds and contracts), so wrapping them would only double-gate a
+file Claude Code rewrites out from under us. `airlock doctor` lists any server
+still ungated, named by store, and `airlock doctor --fix` wraps the stragglers
+(and wires the hook if it is missing) in one command:
+
+```bash
+airlock doctor        # ! MCP servers not behind Airlock: notion [Cursor], … 
+airlock doctor --fix  # wrap them, then re-check
+```
+
 ## Fail-closed, on purpose
 
 This is a security property, not an implementation detail:
