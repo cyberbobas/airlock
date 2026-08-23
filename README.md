@@ -148,6 +148,16 @@ airlock allow revoke 2
 `allow last` folds together every time the same call was gated and proposes the
 tightest grant that covers them — usually one directory instead of twelve files.
 
+**It won't nag you.** A prompt fatigue that gets a security tool uninstalled is
+itself a failure mode, so asks are dampened three ways: `default` never asks on
+an unmatched call (only explicit `ask` rules and `paranoid` do); an answer you
+give is **remembered** and reused for `AIRLOCK_ASK_REMEMBER` seconds (default 5
+minutes), so an agent retrying the same call does not re-prompt you; and `allow`
+turns a recurring question into a one-line standing grant. `airlock report` shows
+how many times you were actually interrupted, and how many repeats a remembered
+answer silenced. Absolute blocks and scan escalations are decided before an ask
+is ever raised, so remembering an answer can never resurrect something forbidden.
+
 **A grant can never lift an absolute block.** Secret paths, `rm -rf /`, cloud
 metadata, known exfil collectors and download-and-execute are checked *before*
 grants, against every argument. `airlock allow` will tell you it refused rather
@@ -452,7 +462,10 @@ file.
 * `AIRLOCK_POLICY`, `AIRLOCK_HOME`, `AIRLOCK_WORKSPACE`, `AIRLOCK_PROFILE`
 * `AIRLOCK_ASK_BACKEND=socket,osascript,zenity,tty,fallback`
 * `AIRLOCK_ASK_TIMEOUT=60` · `AIRLOCK_ASK_TTY=1`
+* `AIRLOCK_ASK_REMEMBER=300` — seconds an answered `ask` is reused before the
+  same question prompts again (0 to always re-ask).
 * `AIRLOCK_NOTIFY=0` — no desktop notification on block.
+* `AIRLOCK_NOTIFY_COOLDOWN=20` — seconds between repeat block notifications.
 * `AIRLOCK_FAIL_OPEN=1` · `AIRLOCK_STRICT=1`
 * `AIRLOCK_SIGN=hmac|ed25519` · `AIRLOCK_SIGN_KEY` · `AIRLOCK_VERIFY_KEY`
 * `AIRLOCK_AUDIT_FSYNC=critical|always|never` · `AIRLOCK_AUDIT_MAX_MB=64`
