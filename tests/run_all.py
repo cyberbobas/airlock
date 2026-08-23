@@ -16,7 +16,8 @@ def main() -> int:
             continue
         t0 = time.time()
         r = subprocess.run([sys.executable, str(p)],
-                           env={**__import__("os").environ, "PYTHONPATH": str(ROOT)},
+                           env={**__import__("os").environ, "PYTHONPATH": str(ROOT),
+                                "AIRLOCK_NOTIFY": "0"},   # never toast the dev's desktop
                            capture_output=True, text=True)
         results.append((name, r.returncode == 0, time.time() - t0))
         sys.stdout.write(r.stdout)

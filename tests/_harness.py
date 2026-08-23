@@ -3,6 +3,15 @@ import json, os, subprocess, sys, tempfile, pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
+# Tests must NEVER touch the developer's desktop. Several suites drive the proxy
+# and hook through hundreds of blocks; with notify-send installed and a DISPLAY
+# present that meant a burst of real toasts on every run. Every test module
+# imports this harness, so forcing these off once — before any suite builds a
+# subprocess env from os.environ — keeps the whole test tree silent. A test that
+# genuinely exercises the ask channel sets AIRLOCK_ASK_BACKEND in its own env.
+os.environ["AIRLOCK_NOTIFY"] = "0"
+os.environ.setdefault("AIRLOCK_ASK_BACKEND", "fallback")
+
 
 def rpc(i, method, params=None):
     m = {"jsonrpc": "2.0", "id": i, "method": method}
@@ -24,7 +33,7 @@ def drive(script, *, home=None, server_id="demo", server=None, mode="enforce",
     home = home or tempfile.mkdtemp(prefix="airlock-t-")
     env = dict(os.environ, PYTHONPATH=str(ROOT), AIRLOCK_HOME=home,
                AIRLOCK_POLICY=str(ROOT / "tests" / "fixtures" / "policy.yaml"), AIRLOCK_MODE=mode,
-               AIRLOCK_ASK_BACKEND="fallback")
+               AIRLOCK_NOTIFY="0", AIRLOCK_ASK_BACKEND="fallback")
     env.pop("AIRLOCK_QUIET", None)
     if env_extra:
         env.update(env_extra)
