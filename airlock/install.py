@@ -8,12 +8,14 @@ What init touches, all of it reversible and all of it backed up:
   * ~/.claude/settings.json       adds the PreToolUse hook entry
   * <project>/.mcp.json           rewraps each server behind airlock-mcp
 
-Everything Airlock adds carries an "airlock" marker so uninstall can find and
-remove exactly its own edits and nothing else.
+Everything Airlock adds is recognised by the command it runs — not by a
+substring — so uninstall removes exactly its own edits and never someone
+else's tool that merely lives under a path containing the word "airlock".
 """
 from __future__ import annotations
 import json
 import os
+import shlex
 import shutil
 import sys
 import time
@@ -22,7 +24,6 @@ from pathlib import Path
 
 from . import config
 
-MARKER = "airlock"
 # PreToolUse decides; PostToolUse records what became of the ones it only
 # asked about — without it a refused call and an approved one look the same
 # in the log, for precisely the calls worth interrupting a human over.
@@ -192,8 +193,47 @@ def _hook_entry(event: str = "PreToolUse") -> dict:
     return {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}
 
 
+def _command_tokens(cmd) -> list[str]:
+    """Split a hook command line into argv, tolerating an already-split list."""
+    if isinstance(cmd, (list, tuple)):
+        return [str(t) for t in cmd]
+    try:
+        return shlex.split(str(cmd))
+    except ValueError:
+        return str(cmd).split()
+
+
+def _invokes_airlock(argv: list[str], *, script: str, subcommand: str,
+                     module: str) -> bool:
+    """Does this argv actually launch a specific Airlock component?
+
+    Matched against exactly the three ways `hook_command()`/`mcp_command()`
+    write these lines — the console script by *basename*, the `airlock
+    <subcommand>` form, or `python -m <module>`. Never a substring scan of the
+    whole command: a user's own MCP server or hook living under a path that
+    merely contains "airlock" (say ~/src/airlock-labs/server.py) must not be
+    mistaken for ours — silently left ungated on init, or ripped out of their
+    settings on uninstall.
+    """
+    if not argv:
+        return False
+    base = os.path.basename(argv[0])
+    if base == script:                                    # airlock-hook / airlock-mcp
+        return True
+    if base == "airlock" and len(argv) >= 2 and argv[1] == subcommand:
+        return True                                       # airlock hook / airlock mcp
+    if module in argv:                                    # python -m airlock.cc_hook
+        return True
+    return False
+
+
 def _is_airlock_hook(entry: dict) -> bool:
-    return MARKER in json.dumps(entry).lower()
+    for h in entry.get("hooks") or []:
+        if _invokes_airlock(_command_tokens(h.get("command", "")),
+                            script="airlock-hook", subcommand="hook",
+                            module="airlock.cc_hook"):
+            return True
+    return False
 
 
 def install_hook(res: Result) -> None:
@@ -257,14 +297,19 @@ def mcp_config_paths(project: Path) -> list[Path]:
 def _is_wrapped(spec: dict) -> bool:
     """Is this server already behind Airlock?
 
-    The marker can land in `command` (console script) or in `args` (the
-    `python -m airlock.mcp_proxy` fallback), so check both — checking only the
-    command double-wrapped a server on the second `init`.
+    Our own wrap always leaves `_airlock_original` behind, so that is the
+    primary signal. As a backstop (in case that key was hand-edited away) we
+    also recognise the wrapper command itself — the console script by basename,
+    `airlock mcp`, or `python -m airlock.mcp_proxy`. We do NOT scan for the
+    substring "airlock" anywhere in the argv: a real server whose own path
+    contains the word would otherwise be read as already-wrapped and silently
+    left ungated.
     """
     if "_airlock_original" in spec:
         return True
-    blob = json.dumps([spec.get("command", ""), *(spec.get("args") or [])]).lower()
-    return MARKER in blob
+    argv = [str(spec.get("command", "")), *(str(a) for a in spec.get("args") or [])]
+    return _invokes_airlock(argv, script="airlock-mcp", subcommand="mcp",
+                            module="airlock.mcp_proxy")
 
 
 def wrap_servers(path: Path, res: Result, unwrap: bool = False) -> int:

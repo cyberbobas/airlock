@@ -291,7 +291,14 @@ def cmd_doctor(a) -> int:
     rows.append(("ok", feed.status()))
 
     settings = install.claude_settings()
-    wired = settings.exists() and "airlock" in settings.read_text()
+    wired = False
+    if settings.exists():
+        try:
+            groups = (json.loads(settings.read_text()).get("hooks")
+                      or {}).get("PreToolUse") or []
+            wired = any(install._is_airlock_hook(g) for g in groups)
+        except Exception:
+            wired = False
     rows.append(("ok", "Claude Code PreToolUse hook is wired") if wired else
                 ("warn", f"hook not in {settings} — native tools are ungated "
                          f"(run: airlock init)"))

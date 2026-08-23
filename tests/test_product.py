@@ -139,6 +139,46 @@ def main():
     s.check("uninstall keeps your data unless --purge",
             (fake / ".airlock" / "policy.yaml").exists())
 
+    # ---- 6b. a path containing "airlock" is not mistaken for our own -----
+    # The marker used to be a substring match on the whole command, so a real
+    # server or a foreign hook living under a path with "airlock" in it was read
+    # as already-ours: the server was silently left ungated, and uninstall tore
+    # the stranger's hook out of their settings.
+    home2 = pathlib.Path(tempfile.mkdtemp(prefix="airlock-collide-"))
+    (home2 / ".claude").mkdir()
+    proj2 = home2 / "proj"; proj2.mkdir()
+    settings2 = home2 / ".claude" / "settings.json"
+    mcp2 = proj2 / ".mcp.json"
+    foreign_hook = {"matcher": "*", "hooks": [
+        {"type": "command", "command": "/opt/airlock-labs/notify"}]}
+    settings2.write_text(json.dumps({"hooks": {"PreToolUse": [foreign_hook]}}))
+    # a legitimate server whose command path merely contains the word
+    mcp2.write_text(json.dumps({"mcpServers": {
+        "repo": {"command": "/opt/airlock-labs/server", "args": ["--stdio"]}}}))
+    env2 = _env(home2 / ".airlock", proj2)
+    env2["CLAUDE_SETTINGS"] = str(settings2)
+    env2["HOME"] = str(home2)
+
+    _cli(["init", "--profile", "default"], env2)
+    after2 = json.loads(mcp2.read_text())["mcpServers"]["repo"]
+    s.check("a server whose path contains 'airlock' still gets gated",
+            "_airlock_original" in after2, after2)
+    pre = json.loads(settings2.read_text())["hooks"]["PreToolUse"]
+    s.check("init keeps a stranger's hook that lives under an airlock path",
+            any(h.get("hooks", [{}])[0].get("command") == "/opt/airlock-labs/notify"
+                for h in pre), pre)
+    s.check("init still installs Airlock's own hook alongside it",
+            any(install._is_airlock_hook(h) for h in pre), pre)
+
+    _cli(["uninstall", "-y"], env2)
+    post = json.loads(settings2.read_text()).get("hooks", {}).get("PreToolUse", [])
+    s.check("uninstall leaves the stranger's airlock-path hook intact",
+            any(h.get("hooks", [{}])[0].get("command") == "/opt/airlock-labs/notify"
+                for h in post), json.loads(settings2.read_text()))
+    s.check("uninstall unwraps the airlock-path server it wrapped",
+            "_airlock_original" not in
+            json.loads(mcp2.read_text())["mcpServers"]["repo"])
+
     # ---- 7. the report exists and says something --------------------
     from airlock import audit
     os.environ["AIRLOCK_HOME"] = str(fake / ".airlock")
