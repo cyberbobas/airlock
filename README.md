@@ -17,6 +17,7 @@ where a skill that reads clean and behaves badly actually gets stopped.
 
 ```bash
 pipx install airlock-agent      # or: uv tool install airlock-agent
+                                # macOS: brew install airlock  (tap, coming with launch)
 airlock init                    # wires the hook, wraps your MCP servers
 airlock doctor                  # confirms what is actually enforcing
 ```
@@ -76,6 +77,31 @@ airlock allow recent             # what got in your way, most frequent first
 airlock allow last               # permit it, narrowly, in one command
 airlock report                   # what the week looked like
 ```
+
+## Let Airlock write your policy
+
+The usual objection to any firewall is "it'll get in my way." So don't guess the
+rules — watch, then derive them. Run a week in `yolo` (logs, blocks nothing),
+then ask Airlock for the least-privilege policy that covers what your agents
+*actually* did:
+
+```bash
+airlock profile yolo             # week one: learn, block nothing
+# ... work normally ...
+airlock policy propose           # print the tightest allows that cover the week
+airlock policy propose --apply   # ...or write them straight into your policy
+airlock profile default          # now guard
+```
+
+`propose` reads the audit log and collapses what it saw into narrow grants — one
+directory glob instead of forty files, one host per egress tool. It only ever
+proposes *allows*, and only for calls that were allowed and carried no
+high-severity flag: anything blocked, asked about, or flagged for reaching a
+secret or a collector is reported for you to see, never silently whitelisted.
+
+Prefer to watch it live? `airlock monitor` is a full-screen board of decisions as
+they happen — allow, ask, block, hold — so the gate is something you can see
+working, not a black box.
 
 ## Profiles — pick a posture, don't read YAML
 
@@ -215,6 +241,25 @@ number changes.
 
 Each MCP server in the report also carries what the runtime gate makes of it:
 pinned, never seen, or held.
+
+**In CI, as a GitHub Action.** Scan every pull request before a poisoned skill or
+MCP definition can merge:
+
+```yaml
+# .github/workflows/airlock.yml
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: airlock-agent/airlock@v1
+        with:
+          paths: ".claude .mcp.json .cursor AGENTS.md"
+          fail-on-findings: true
+```
+
+The action is in [`action.yml`](action.yml); a copyable workflow is in
+[`docs/scan-action-example.yml`](docs/scan-action-example.yml).
 
 Airlock does **not** scan tool *output* to decide anything. Measured on ordinary
 content, these indicators fire constantly and legitimately: this project's own
@@ -388,8 +433,8 @@ file.
 
 | | |
 |---|---|
-| `init` · `uninstall` · `profile` · `doctor` | setup |
-| `allow` · `check` · `log` · `report` | daily |
+| `init` · `uninstall` · `profile` · `policy propose` · `doctor` | setup |
+| `allow` · `check` · `log` · `monitor` · `report` | daily |
 | `scan` · `pins` · `contracts` · `update` | admission |
 | `verify` · `export` | evidence |
 | `bench` | overhead |
