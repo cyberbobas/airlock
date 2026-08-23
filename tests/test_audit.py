@@ -268,6 +268,48 @@ def main():
     s.check("the tail checkpoint agrees with the record count under contention",
             head["count"] == n, f"head={head['count']} records={n}")
 
+    # --- verify is READ-ONLY: a missing key never materialises one ---------
+    # An hmac-signed log, then verify pointed at a key path that does not exist.
+    # The old code ran verification through ensure_key(), which wrote a fresh
+    # random key at that path (a file in the cwd for a relative value) and then
+    # reported every signature broken against a key unrelated to the log.
+    home, env = _write(6, AIRLOCK_SIGN="hmac")
+    sandbox = Path(tempfile.mkdtemp(prefix="verify-ro-"))
+    ghost = sandbox / "does-not-exist" / "audit.key"      # parent missing too
+    env2 = dict(env, AIRLOCK_SIGN_KEY=str(ghost))
+    before = set(sandbox.rglob("*"))
+    r = subprocess.run(
+        [sys.executable, "-c",
+         "from airlock import audit;ok,n,m=audit.verify(all_segments=True);"
+         "print('OK' if ok else 'FAIL','|',m)"],
+        env=env2, capture_output=True, text=True, cwd=str(sandbox))
+    v = r.stdout.strip()
+    s.check("verify does not create a signing key when one is missing",
+            not ghost.exists() and set(sandbox.rglob("*")) == before,
+            sorted(str(p) for p in set(sandbox.rglob("*")) - before))
+    s.check("a missing key reads as 'could not check', not tampering",
+            "could not be checked" in v and "unavailable" in v
+            and "do not verify" not in v and "rewritten" not in v, v)
+
+    # --- writing with an unusable key WARNS instead of failing silently ----
+    # sign() returns "" on any error, so records went to disk unsigned with no
+    # signal until a much later verify. Signing configured + an unwritable key
+    # path must say so at write time.
+    home3 = Path(tempfile.mkdtemp(prefix="audit-warn-"))
+    env3 = _env(home3, AIRLOCK_SIGN="hmac",
+                AIRLOCK_SIGN_KEY="/proc/nonexistent/cannot/write/audit.key")
+    w = subprocess.run([sys.executable, "-c",
+        "from airlock import audit\n"
+        "audit.record('decision', source='mcp', server='s', tool='mcp__s__t',\n"
+        "             decision='allow', effective='allow', reason='r')\n"],
+        env=env3, capture_output=True, text=True)
+    recs = [json.loads(l) for l in (home3 / "audit.jsonl").read_text().splitlines()
+            if l.strip()]
+    s.check("signing on + unusable key warns at write time",
+            "WARN" in w.stderr and "UNSIGNED" in w.stderr, w.stderr[-200:])
+    s.check("...and the record is written unsigned (enforcement never stalls)",
+            recs and all("sig" not in r for r in recs), recs[:1])
+
     return s.report()
 
 

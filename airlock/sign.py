@@ -59,7 +59,36 @@ def ensure_key() -> Path:
 
 
 def _hmac_key() -> bytes:
+    """The key for *writing* a signature — created on first use if absent."""
     return ensure_key().read_bytes()
+
+
+def _hmac_key_ro() -> bytes | None:
+    """The key for *verifying* — read only, never created.
+
+    Verification is a read-only operation. Routing it through ensure_key() (as
+    it once did) meant `airlock verify` would materialise a fresh random key at
+    AIRLOCK_SIGN_KEY when the real one was missing — writing a file into the cwd
+    for a relative path, then reporting every signature as broken against a key
+    that had nothing to do with the log. Read, or report unavailable.
+    """
+    try:
+        return key_path().read_bytes()
+    except OSError:
+        return None
+
+
+def can_verify(alg: str) -> bool:
+    """Is the material needed to verify this algorithm actually available?
+
+    Lets a caller tell "the signature is wrong" (tampering) apart from "I could
+    not check the signature" (missing key) — two very different verdicts.
+    """
+    if alg == ALG_HMAC:
+        return _hmac_key_ro() is not None
+    if alg == ALG_ED25519:
+        return public_key() is not None
+    return True
 
 
 def _ed25519_private():
@@ -87,7 +116,10 @@ def sign(digest: str) -> str:
 def verify_one(digest: str, signature: str, alg: str) -> bool:
     try:
         if alg == ALG_HMAC:
-            want = hmac.new(_hmac_key(), digest.encode(), hashlib.sha256).hexdigest()[:32]
+            key = _hmac_key_ro()
+            if key is None:
+                return False
+            want = hmac.new(key, digest.encode(), hashlib.sha256).hexdigest()[:32]
             return hmac.compare_digest(want, signature)
         if alg == ALG_ED25519:
             pub = public_key()

@@ -290,6 +290,27 @@ def record(event: str, *, source: str, tool: str = "", server: str = "",
     return rec
 
 
+_unsigned_warned = False
+
+
+def _warn_unsigned(alg: str) -> None:
+    """Say — once, at write time — that signing is configured but the key could
+    not be used, so records are going to disk unsigned.
+
+    Without this the only symptom is `airlock verify` failing much later, long
+    after the writes it complains about; the operator who turned signing on has
+    no idea their key path is wrong until the audit is already full of unsigned
+    records.
+    """
+    global _unsigned_warned
+    if _unsigned_warned:
+        return
+    _unsigned_warned = True
+    print(f"[airlock] WARN  signing is configured ({alg}) but the key at "
+          f"{signing.key_path()} could not be used — records are being written "
+          f"UNSIGNED", file=sys.stderr, flush=True)
+
+
 def _write_record(path: Path, rec: dict, effective: str, decision: str) -> None:
     """Append one chained record. Caller holds the append lock."""
     _rotate_if_needed(path)
@@ -311,6 +332,8 @@ def _write_record(path: Path, rec: dict, effective: str, decision: str) -> None:
                 sig = signing.sign(rec["h"])
                 if sig:
                     rec["alg"], rec["sig"] = alg, sig
+                else:
+                    _warn_unsigned(alg)
             f.seek(0, os.SEEK_END)
             f.write((json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8"))
             f.flush()
@@ -367,6 +390,8 @@ def _write_head(count: int, last: str) -> None:
         sig = signing.sign(f"{count}:{last}")
         if sig:
             h["alg"], h["sig"] = alg, sig
+        else:
+            _warn_unsigned(alg)
     global _head_cache
     try:
         p = head_path()
@@ -491,6 +516,8 @@ def _ledger_append(segment: str, last: str) -> str | None:
                     sig = signing.sign(e["h"])
                     if sig:
                         e["alg"], e["sig"] = alg, sig
+                    else:
+                        _warn_unsigned(alg)
                 f.seek(0, os.SEEK_END)
                 f.write(json.dumps(e, ensure_ascii=False) + "\n")
                 f.flush()
@@ -706,6 +733,7 @@ def verify(path: Path | None = None, *, all_segments: bool = False
     n = 0
     unsigned = 0
     badsig = 0
+    unverifiable = 0
     anchors: list[tuple[str, str]] = []      # (segment named, ledger digest)
     expects_head = False
     for p in files:
@@ -739,7 +767,12 @@ def verify(path: Path | None = None, *, all_segments: bool = False
                 return False, n, (f"{p.name} line {lineno}: digest mismatch — "
                                   f"this record was edited")
             if rec.get("sig"):
-                if not signing.verify_one(rec["h"], rec["sig"], rec.get("alg", "")):
+                a = rec.get("alg", "")
+                if signing.verify_one(rec["h"], rec["sig"], a):
+                    pass
+                elif not signing.can_verify(a):
+                    unverifiable += 1        # key absent — cannot check, ≠ broken
+                else:
                     badsig += 1
             else:
                 unsigned += 1
@@ -773,6 +806,12 @@ def verify(path: Path | None = None, *, all_segments: bool = False
                           "audit.head is missing — it was deleted")
     if head is not None:
         if not head_ok(head):
+            if head.get("sig") and not signing.can_verify(head.get("alg", "")):
+                return False, n, (
+                    "the tail checkpoint carries a signature that could not be "
+                    f"checked: the signing key is unavailable ({signing.key_path()})"
+                    ". Verification is read-only and will not create one — point "
+                    "AIRLOCK_SIGN_KEY (hmac) or AIRLOCK_VERIFY_KEY (ed25519) at it")
             return False, n, ("the tail checkpoint (audit.head) does not verify "
                               "against the signing key — it was rewritten")
         want_n, want_last = int(head.get("count", 0)), head.get("last")
@@ -789,6 +828,14 @@ def verify(path: Path | None = None, *, all_segments: bool = False
         msg += f" in {len(files)} segments"
     if badsig:
         return False, n, f"{msg}, but {badsig} signature(s) do not verify"
+    # A missing key is "I could not check", not "this was tampered with". Say so,
+    # and never let verify write a key to close the gap — it is read-only.
+    if unverifiable:
+        return False, n, (
+            f"{msg}, but {unverifiable} signature(s) could not be checked: the "
+            f"signing key is unavailable ({signing.key_path()}). Verification is "
+            f"read-only and will not create one — point AIRLOCK_SIGN_KEY (hmac) "
+            f"or AIRLOCK_VERIFY_KEY (ed25519) at the real key")
     # Unsigned records while signing is configured are a failure, not a note.
     # Otherwise the downgrade is free: delete the checkpoint, strip every
     # signature, rewrite the history, recompute the chain — and a log that
