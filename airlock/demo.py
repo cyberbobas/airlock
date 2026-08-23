@@ -91,8 +91,11 @@ def run(*, color: bool = True) -> int:
     for line in verify.stdout.splitlines():
         print(f"  {line}")
 
-    print(f"\n{d}   The skill's prose was never trusted or parsed for intent. The "
-          f"call was refused because of what it touched.{z}")
+    print(f"\n{d}   The server was held the moment its own tool descriptions "
+          f"advertised an exfil path — every call refused until a human reviews "
+          f"the pin.{z}")
+    print(f"{d}   Airlock never had to trust or parse the skill's prose to stop "
+          f"it.{z}")
     print(f"{d}   AIRLOCK_HOME={home}{z}\n")
     # a non-zero proxy exit here would mean the demo itself broke, not a block
     return 0 if proxy.returncode == 0 else 1

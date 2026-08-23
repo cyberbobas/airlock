@@ -158,13 +158,24 @@ def to_yaml(prop: Proposal) -> str:
     return banner + body
 
 
-def apply(pol, prop: Proposal) -> tuple[int, int]:
-    """Append every proposed grant to the active policy. Returns (added, skipped)."""
-    added = skipped = 0
+def apply(pol, prop: Proposal, *, include_shell: bool = False) -> tuple[int, int, int]:
+    """Append proposed grants to the active policy. Returns (added, skipped, held).
+
+    A shell grant carries no `match` — it allows a shell tool outright, which is
+    the broadest thing propose can suggest. Absolute blocks (`rm -rf /`,
+    `curl | sh`, …) still can't be lifted by it, but `npm test` and every other
+    ordinary shell call would become allow-without-ask. That is too sharp to
+    write unattended, so `apply` HOLDS shell grants back by default and reports
+    them; pass include_shell=True to write them too.
+    """
+    added = skipped = held = 0
     for g in prop.grants:
+        if "match" not in g and not include_shell:      # a bare shell grant
+            held += 1
+            continue
         _, msg = grantmod.add(pol, dict(g))
         if msg == "granted":
             added += 1
         else:
             skipped += 1
-    return added, skipped
+    return added, skipped, held

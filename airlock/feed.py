@@ -55,10 +55,22 @@ from pathlib import Path
 
 from . import config
 
-DEFAULT_URL = os.environ.get(
-    "AIRLOCK_FEED_URL",
-    "https://raw.githubusercontent.com/airlock-agent/indicators/main/feed.json")
+# Where a hosted feed will live once the indicators repo is published. Until
+# then FEED_PUBLISHED is False, so a bare `airlock update` says so instead of
+# firing an HTTP request at a repo that 404s. Flip this to True the day the
+# indicators repo goes live (see docs/OWNER-TODO.md).
+HOSTED_FEED_URL = "https://raw.githubusercontent.com/airlock-agent/indicators/main/feed.json"
+FEED_PUBLISHED = False
 BUNDLED = config.PKG / "data" / "feed.json"
+
+
+def default_source() -> str | None:
+    """The feed to fetch when none is named: an explicit env URL, else the
+    hosted feed once it exists, else nothing (not yet published)."""
+    env = os.environ.get("AIRLOCK_FEED_URL", "").strip()
+    if env:
+        return env
+    return HOSTED_FEED_URL if FEED_PUBLISHED else None
 
 
 def feed_path() -> Path:
@@ -176,7 +188,12 @@ def update(src: str | None = None, *, timeout: float = 20.0,
     chain; fetching them unauthenticated would be the exact failure this project
     is about.
     """
-    src = src or DEFAULT_URL
+    src = src or default_source()
+    if not src:
+        return False, ("no hosted indicator feed is published yet. Airlock runs "
+                       "fully on its bundled floor; to install a feed, pass a URL "
+                       "or file (or set AIRLOCK_FEED_URL) — `airlock update "
+                       "./feed.json`.")
     try:
         if "://" in src and not src.startswith("file://"):
             req = urllib.request.Request(src, headers={"User-Agent": "airlock"})

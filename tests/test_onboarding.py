@@ -90,12 +90,22 @@ def main():
     polfile.write_text("mode: guard\ndefault: ask\nrules: []\ngrants: []\n")
     os.environ["AIRLOCK_POLICY"] = str(polfile)
     from airlock.policy import Policy
-    added, skipped = propose.apply(Policy.resolve(), prop)
+    shell_grants = sum(1 for g in prop.grants if "match" not in g)
+    added, skipped, held = propose.apply(Policy.resolve(), prop)
     written = polfile.read_text()
-    s.check("apply writes every grant to the policy",
-            added == len(prop.grants) and "api.github.com" in written, (added, skipped))
+    s.check("apply writes the scoped grants to the policy",
+            added == len(prop.grants) - shell_grants and "api.github.com" in written,
+            (added, skipped, held))
+    s.check("apply holds back bare shell grants by default",
+            held == shell_grants and shell_grants >= 1 and "Bash" not in written,
+            (held, shell_grants))
+    # --include-shell writes them too
+    added_sh, _, held_sh = propose.apply(Policy.resolve(), prop, include_shell=True)
+    s.check("--include-shell writes the shell grants",
+            held_sh == 0 and "Bash" in polfile.read_text(), (added_sh, held_sh))
     # second apply is idempotent
-    added2, _ = propose.apply(Policy.resolve(), propose.build(days=3650))
+    added2, _, _ = propose.apply(Policy.resolve(), propose.build(days=3650),
+                                 include_shell=True)
     s.check("apply is idempotent (no duplicate grants)", added2 == 0, added2)
     os.environ.pop("AIRLOCK_POLICY", None)
 

@@ -152,14 +152,24 @@ def scan_text(text: str, *, all_hits: bool = False) -> list[dict]:
         text = text[:MAX_TEXT]
     flags: list[dict] = []
     seen_ids: set[str] = set()
+    # (id, line, hit) already reported. A built-in pattern and a bundled-feed
+    # pattern can share an id and match the same text (e.g. exfil.collector on
+    # "webhook.site") — that overlap is by design, but it must not double-report
+    # the same finding on the same line.
+    seen_hits: set = set()
     for pid, sev, rx, _why in _active_patterns():
         if not all_hits and pid in seen_ids:
             continue
         matches = list(rx.finditer(text)) if all_hits else ([m] if (m := rx.search(text)) else [])
         for m in matches:
-            f = {"id": pid, "severity": sev, "hit": m.group(0)[:80].replace("\n", " ")}
+            hit = m.group(0)[:80].replace("\n", " ")
+            f = {"id": pid, "severity": sev, "hit": hit}
             if all_hits:
                 f["line"] = _line_of(text, m.start())
+                key = (pid, f["line"], hit)
+                if key in seen_hits:
+                    continue
+                seen_hits.add(key)
             flags.append(f)
             seen_ids.add(pid)
     zw = [i for i, ch in enumerate(text) if ch in _ZERO_WIDTH]

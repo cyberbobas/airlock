@@ -286,7 +286,7 @@ def remove_hook(res: Result) -> None:
 # ---- MCP config stores -------------------------------------------------
 # Every place an agent on this box actually keeps its MCP server list. "init
 # closes your MCP servers" was only ever true for a project .mcp.json; the same
-# person's Cursor, Windsurf, Cline and Continue servers sat wide open.
+# person's Cursor, Windsurf and Cline servers sat wide open.
 #
 # Deliberately NOT here: Claude Code's global ~/.claude.json. Its MCP calls are
 # already gated by the PreToolUse hook (cc_hook applies the full policy, plus
@@ -310,7 +310,11 @@ def mcp_stores(project: Path) -> list[tuple[str, Path]]:
         ("Cline (macOS)",         home / "Library" / "Application Support" / "Code"
                                   / "User" / "globalStorage" / "saoudrizwan.claude-dev"
                                   / "settings" / "cline_mcp_settings.json"),
-        ("Continue",              home / ".continue" / "config.json"),
+        # Continue is deliberately NOT here yet: it keeps its servers under
+        # experimental.modelContextProtocolServers as a LIST of {transport:{...}}
+        # (and a newer YAML config), which _server_maps does not parse. Claiming
+        # it while silently not wrapping it is worse than not claiming it. Real
+        # support is a tracked backlog item.
         ("Claude Desktop (macOS)", home / "Library" / "Application Support" / "Claude"
                                    / "claude_desktop_config.json"),
         ("Claude Desktop",        home / ".config" / "Claude"
@@ -417,11 +421,21 @@ def init(profile: str = config.DEFAULT_PROFILE, *, project: Path | None = None,
         stores = mcp_stores(project)
         if not stores:
             res.note("no MCP config found in any known store (Claude Code, "
-                     "Cursor, Windsurf, Cline, Continue, Claude Desktop) — "
+                     "Cursor, Windsurf, Cline, Claude Desktop) — "
                      "nothing to wrap yet. Re-run `airlock init` once you have "
                      "added an MCP server.")
         for label, p in stores:
             wrap_servers(p, res, label=label)
+    # If neither console script is on PATH we fall back to `python -m airlock.…`.
+    # That works for THIS interpreter, but your agent launches these commands
+    # with its own environment and will not have this module importable — the
+    # hook and the MCP wrap would be dead on arrival. Say so loudly.
+    if (hook or mcp) and " -m airlock" in hook_command():
+        res.note("WARNING: 'airlock' is not on your PATH, so the wiring points at "
+                 "`python -m airlock.…`. Your agents (Cursor, Claude Code, …) run "
+                 "these with their own environment and will NOT find that module — "
+                 "install Airlock first with `pipx install airlock-agent` (or "
+                 "`pip install .`), then re-run `airlock init`.")
     return res
 
 

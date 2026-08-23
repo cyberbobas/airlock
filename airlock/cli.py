@@ -474,9 +474,15 @@ def cmd_propose(a) -> int:
     print()
     if a.apply:
         pol = _policy()
-        added, skipped = proposemod.apply(pol, prop)
+        added, skipped, held = proposemod.apply(
+            pol, prop, include_shell=a.include_shell)
         print(f"  {_C['l']}✓{_C['0']} applied {added} grant(s) to {pol.path}"
               + (f" ({skipped} already present)" if skipped else ""))
+        if held:
+            print(f"  {_C['m']}!{_C['0']} held back {held} shell grant(s) — a bare "
+                  f"shell allow is too broad to write unattended. Review them "
+                  f"above, then `airlock policy propose --apply --include-shell` "
+                  f"or `airlock allow` each by hand.")
         print(f"  {_C['d']}now make them bite: airlock profile default{_C['0']}\n")
     else:
         print(proposemod.to_yaml(prop))
@@ -539,7 +545,14 @@ def cmd_allow(a) -> int:
                   f"{_C['c']}{e.get('tool')}{_C['0']}  {_C['d']}{e.get('reason','')[:50]}{_C['0']}")
             for r in (e.get("_resources") or [])[:3]:
                 print(f"          {_C['d']}{r}{_C['0']}")
-        print(f"\n  {_C['d']}allow the top one: airlock allow last{_C['0']}\n")
+        top = rec[0].get("tool", "")
+        if top.startswith("mcp__"):
+            parts = top.split("__")
+            suggest = f"airlock allow {parts[1]} {parts[-1]}"
+        else:
+            suggest = f"airlock allow {top}"
+        print(f"\n  {_C['d']}allow the top one:  {suggest}"
+              f"   ·   or the most recent:  airlock allow last{_C['0']}\n")
         return 0
     else:
         tool = (f"mcp__{a.target}__{a.tool}" if a.tool else a.target)
@@ -697,6 +710,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="only propose for tools seen at least this many times")
     pp.add_argument("--apply", action="store_true",
                     help="write the proposed grants into your policy")
+    pp.add_argument("--include-shell", action="store_true", dest="include_shell",
+                    help="also write bare shell-tool grants (held back by default)")
     pp.set_defaults(fn=cmd_propose)
 
     s = sub.add_parser("allow", help="permit what was just blocked")

@@ -87,6 +87,13 @@ def main():
     (clean_only / "SKILL.md").write_text(CLEAN)
     s.check("a clean tree scores 0 risk", batch.scan_path(clean_only).to_dict()["risk"] == 0)
 
+    # a built-in pattern and the bundled feed share the exfil.collector id and
+    # both match webhook.site — the finding must appear once, not twice.
+    coll = [f for f in scan.scan_text("exfil to https://webhook.site/x", all_hits=True)
+            if f["id"] == "exfil.collector"]
+    s.check("overlapping built-in + feed pattern is not double-reported",
+            len(coll) == 1, coll)
+
     s.check("severity filter works",
             all(f.severity == "high" for f in batch.scan_path(d, min_severity="high").findings))
     return s.report()

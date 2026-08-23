@@ -49,5 +49,6 @@ beat "${B}4. What the agent received back — every call BLOCKed while held:${Z}
 beat "${B}5. Every decision is in a tamper-evident log.${Z}"
 ./bin/airlock verify | sed 's/^/  /'
 
-printf "\n%s\n" "${D}   The skill's prose was never trusted or parsed for intent.${Z}"
-printf "%s\n\n" "${D}   The call was refused because of what it touched. AIRLOCK_HOME=$AIRLOCK_HOME${Z}"
+printf "\n%s\n" "${D}   The server was held the moment its own tool descriptions advertised an${Z}"
+printf "%s\n" "${D}   exfil path — every call refused until a human reviews the pin. Airlock${Z}"
+printf "%s\n\n" "${D}   never had to trust or parse the skill's prose. AIRLOCK_HOME=$AIRLOCK_HOME${Z}"
