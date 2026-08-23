@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "updated": "2026-08-20",
+  "patterns": [
+    {
+      "id": "exfil.collector.webhook",
+      "severity": "high",
+      "regex": "webhook\\.site|requestbin\\.(com|net)",
+      "why": "known exfiltration collector host"
+    }
+  ],
+  "block_hosts": ["webhook.site"]
+}

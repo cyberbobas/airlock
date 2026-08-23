@@ -1,0 +1,22 @@
+# Copy this into .github/workflows/airlock.yml in your own repo to scan every PR
+# for poisoned skills, MCP definitions and hook commands before they merge.
+name: airlock
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: airlock-agent/airlock@v1
+        with:
+          paths: ".claude .mcp.json .cursor AGENTS.md"
+          min-severity: low
+          fail-on-findings: true

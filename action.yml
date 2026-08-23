@@ -1,0 +1,62 @@
+name: "Airlock scan"
+description: "Scan agent skills, MCP server definitions and hook commands for injection / secret-access / exfil / stealth indicators, and fail the build on high-severity findings."
+author: "Airlock"
+branding:
+  icon: "shield"
+  color: "purple"
+
+inputs:
+  paths:
+    description: "Space-separated paths to scan (globs allowed). Missing paths are skipped."
+    required: false
+    default: ".claude .mcp.json .cursor .github/copilot-instructions.md AGENTS.md"
+  min-severity:
+    description: "Report threshold: low | med | high."
+    required: false
+    default: "low"
+  fail-on-findings:
+    description: "Fail the job when a high-severity indicator is found."
+    required: false
+    default: "true"
+  python-version:
+    description: "Python used to run the scanner."
+    required: false
+    default: "3.12"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install Airlock
+      shell: bash
+      # Installs the pinned copy of Airlock that ships with this action ref.
+      # Once airlock-agent is on PyPI you can replace this with
+      #   pip install "airlock-agent==<version>"
+      run: pip install "${{ github.action_path }}"
+
+    - name: Scan
+      shell: bash
+      run: |
+        set -o pipefail
+        args="--min-severity ${{ inputs.min-severity }} --no-color"
+        [ "${{ inputs.fail-on-findings }}" = "true" ] && args="$args --fail-on-findings"
+        status=0
+        scanned=0
+        for p in ${{ inputs.paths }}; do
+          if [ ! -e "$p" ]; then
+            echo "airlock: skip '$p' (not present)"
+            continue
+          fi
+          scanned=$((scanned+1))
+          echo "::group::airlock scan $p"
+          airlock scan "$p" $args || status=$?
+          echo "::endgroup::"
+        done
+        if [ "$scanned" = "0" ]; then
+          echo "airlock: nothing to scan — none of the configured paths exist"
+        fi
+        exit $status

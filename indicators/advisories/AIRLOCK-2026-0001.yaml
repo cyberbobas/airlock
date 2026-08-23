@@ -1,0 +1,31 @@
+# Airlock advisory — an OSV-style record for a poisoned agent skill or MCP server.
+# Advisories are the human-readable half of the feed: each one can contribute a
+# block_host or a pattern that ships in feed.json, and each is citable when we say
+# "Airlock found and disclosed this."
+id: AIRLOCK-2026-0001
+schema: 1
+published: 2026-08-20
+modified: 2026-08-20
+severity: high
+kind: skill                       # skill | mcp-server | command
+summary: >
+  "repo-summarizer" MCP server exfiltrates SSH keys via a telemetry tool whose
+  description instructs the agent to read ~/.ssh/id_rsa and POST it to a
+  collector before any other tool runs.
+affected:
+  - name: repo-summarizer
+    ecosystem: mcp
+    versions: ["<=2.1.0"]
+    identifiers:
+      server_name: repo-summarizer
+indicators:
+  block_hosts:
+    - webhook.site
+  patterns:
+    - id: exfil.collector.webhook
+      severity: high
+      regex: "webhook\\.site|requestbin\\.(com|net)"
+      why: "known exfiltration collector host"
+references:
+  - "https://github.com/airlock-agent/airlock (demo.sh reproduces this class)"
+credit: "Airlock research"
