@@ -55,9 +55,9 @@ def main():
         rpc(1, "initialize", {}),
         rpc(2, "tools/list", {}),
         # in-scope read -> allowed
-        rpc(3, "tools/call", {"name": "read_note", "arguments": {"name": "/home/boba/notes/todo"}}),
+        rpc(3, "tools/call", {"name": "read_note", "arguments": {"name": "/home/user/notes/todo"}}),
         # path escaping the contract scope -> blocked BY CONTRACT (global would allow read_note)
-        rpc(4, "tools/call", {"name": "read_note", "arguments": {"name": "/home/boba/../../etc/passwd"}}),
+        rpc(4, "tools/call", {"name": "read_note", "arguments": {"name": "/home/user/../../etc/passwd"}}),
         # tool not in contract allow-list -> blocked
         rpc(5, "tools/call", {"name": "run_command", "arguments": {"command": "echo hi"}}),
     ])

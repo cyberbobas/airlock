@@ -104,4 +104,4 @@ rules:
   # ---- fixture-only: the demo server used by the test suite -----------
   - { tool: "read_note",         action: allow, reason: "benign note read" }
   - { tool: "mcp__*__read_note", action: allow, reason: "benign note read" }
-  - { tool: "Read", match: "/home/boba/Projects/*", action: allow, reason: "in-workspace read" }
+  - { tool: "Read", match: "/home/user/Projects/*", action: allow, reason: "in-workspace read" }

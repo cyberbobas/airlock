@@ -13,10 +13,10 @@ def main():
 
     # --- 1. decoy argument: the policy used to inspect ONE field ----------
     for label, args in [
-        ("sibling arg", {"name": "todo", "path": "/home/boba/.ssh/id_rsa"}),
-        ("nested arg", {"name": "todo", "opts": {"src": "/home/boba/.ssh/id_rsa"}}),
-        ("list arg", {"name": "todo", "extra": ["ok", "/home/boba/app/.env"]}),
-        ("key, not value", {"name": "todo", "/home/boba/.ssh/id_rsa": 1}),
+        ("sibling arg", {"name": "todo", "path": "/home/user/.ssh/id_rsa"}),
+        ("nested arg", {"name": "todo", "opts": {"src": "/home/user/.ssh/id_rsa"}}),
+        ("list arg", {"name": "todo", "extra": ["ok", "/home/user/app/.env"]}),
+        ("key, not value", {"name": "todo", "/home/user/.ssh/id_rsa": 1}),
     ]:
         r, _, _ = drive(HANDSHAKE + call(3, "read_note", args))
         s.check(f"decoy secret path in a {label} is BLOCKED", blocked(r.get(3)), r.get(3))

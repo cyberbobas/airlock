@@ -10,7 +10,7 @@ s = Suite("PROXY ROBUSTNESS")
 E = {"AIRLOCK_MODE": "enforce"}
 
 # split a secret path across two arguments
-r,_,_ = drive(HANDSHAKE + call(3,"read_note",{"name":"todo","a":"/home/boba/.ss","b":"h/id_rsa"}), env_extra=E)
+r,_,_ = drive(HANDSHAKE + call(3,"read_note",{"name":"todo","a":"/home/user/.ss","b":"h/id_rsa"}), env_extra=E)
 s.check("secret split across two args", blocked(r.get(3)), r.get(3))
 
 # case tricks
@@ -18,7 +18,7 @@ r,_,_ = drive(HANDSHAKE + call(3,"read_note",{"name":"/HOME/BOBA/.SSH/ID_RSA"}),
 s.check("uppercase secret path", blocked(r.get(3)), r.get(3))
 
 # resources/read is an fs read by another name
-r,_,_ = drive(HANDSHAKE + rpc(3,"resources/read",{"uri":"file:///home/boba/.ssh/id_rsa"}), env_extra=E)
+r,_,_ = drive(HANDSHAKE + rpc(3,"resources/read",{"uri":"file:///home/user/.ssh/id_rsa"}), env_extra=E)
 s.check("resources/read of a secret is gated", blocked(r.get(3)), r.get(3))
 
 # tools/call as a NOTIFICATION (no id) -- must not be forwarded

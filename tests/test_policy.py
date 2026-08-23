@@ -27,7 +27,7 @@ def main():
     # ...and must catch what the primary field hides
     s.check("secret in a secondary arg -> BLOCK",
             p.decide("Read", {"file_path": f"{ws}/a.py",
-                              "note": "/home/boba/.ssh/id_rsa"}).action == BLOCK)
+                              "note": "/home/user/.ssh/id_rsa"}).action == BLOCK)
     s.check("secret nested three deep -> BLOCK",
             p.decide("Read", {"file_path": "/ok", "a": {"b": [{"c": "~/.aws/credentials"}]}}
                      ).action == BLOCK)
@@ -54,7 +54,7 @@ def main():
     d = p.decide("mcp__d__read_note", {"name": "todo"})
     esc = p.apply_flags(d, [{"id": "injection.override", "severity": "high"}])
     s.check("high-severity scan flag escalates allow -> ask", esc.action == ASK)
-    blk = p.decide("Read", {"file_path": "/home/boba/.ssh/id_rsa"})
+    blk = p.decide("Read", {"file_path": "/home/user/.ssh/id_rsa"})
     s.check("escalation never loosens a block",
             p.apply_flags(blk, [{"id": "x", "severity": "low"}]).action == BLOCK)
 
