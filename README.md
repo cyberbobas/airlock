@@ -28,10 +28,44 @@ re-serialising, so nothing shows up in your git diff. If you edited the file
 after installing, your edits win and it falls back to a semantic unwrap.
 `--purge` also deletes Airlock's own data.
 
-Both are safe to run non-interactively: without a tty they ask you to pass `-y`
-rather than prompting.
+`airlock init` never prompts — it applies its changes and prints exactly what it
+touched. `airlock uninstall` asks for confirmation first; pass `-y` to skip the
+prompt when running non-interactively.
 
 Requires Python 3.11+. macOS and Linux. One dependency (PyYAML).
+
+<details>
+<summary><strong>Verified end to end</strong> — clean venv → install → init → doctor → demo → uninstall</summary>
+
+Run on 2026-08-23, Python 3.13, Linux, in a throwaway `$HOME`:
+
+```console
+$ python3 -m venv venv && . venv/bin/activate
+$ pip install ".[sign]"
+Successfully installed airlock-agent-0.4.6 …
+
+$ airlock init --profile default
+  ✓ policy written from profile 'default'
+  ✓ PreToolUse + PostToolUse hooks -> …/bin/airlock-hook
+  ✓ wrapped 1 MCP server            (backup written alongside)
+
+$ airlock doctor                    # exit 0
+  ✓ policy loads: 100 rules, mode=guard
+  ✓ audit: chain intact across 2 records
+  ✓ Claude Code PreToolUse hook is wired
+  ✓ all MCP servers in 1 config(s) are gated
+
+$ ./demo.sh
+  … poisoned server HELD, every call BLOCKed, CHAIN INTACT across 21 records
+
+$ airlock uninstall -y
+  ✓ removed 2 Airlock hook entries
+  ✓ unwrapped 1 MCP server (restored the original file byte-for-byte)
+```
+
+`uninstall` left the project's `.mcp.json` byte-for-byte identical to before
+`init`.
+</details>
 
 ## The first five minutes
 
@@ -52,9 +86,15 @@ airlock report                   # what the week looked like
 | `paranoid` | **blocked** | asks a human | **refused** | a production repo, a regulated codebase |
 
 ```bash
-airlock profile              # which one is active, and why
-airlock profile paranoid     # switch
+airlock profile                 # which one is active, and why
+airlock profile paranoid        # switch (keeps an existing edited policy)
+airlock profile paranoid --force # overwrite your policy with a fresh profile
 ```
+
+Switching profiles will **not** overwrite a policy you already have — your edits
+and `grants:` win, so `airlock profile paranoid` on an existing policy reports
+that it kept your file. Pass `--force` to replace it with a clean copy of the
+profile.
 
 The intended path is `yolo` → `default` → `paranoid`: learn, then guard, then
 tighten. A firewall that gets in the way on day one is the one that gets
@@ -117,10 +157,10 @@ This is a security property, not an implementation detail:
 ## Overhead — measured, not assumed
 
 ```
-policy decision      p50   249 µs    p99  1506 µs
-MCP call, direct     p50  0.064 ms   p99  0.096 ms
-MCP call, gated      p50  0.729 ms   p99  0.946 ms
-added by Airlock     p50  0.665 ms   p99  0.850 ms
+policy decision      p50    25 µs    p99   357 µs
+MCP call, direct     p50  0.068 ms   p99  0.091 ms
+MCP call, gated      p50  0.556 ms   p99  0.739 ms
+added by Airlock     p50  0.489 ms   p99  0.649 ms
 peak RSS             27 MB
 ```
 
@@ -170,11 +210,19 @@ them would be worse.
 
 ## Indicators that stay current
 
-Collector hosts and injection phrasings rot like antivirus signatures.
+Collector hosts and injection phrasings rot like antivirus signatures, so
+indicators can be refreshed from a versioned feed that updates independently of
+the code.
+
+> **No hosted feed is published yet.** Airlock ships a bundled indicator floor
+> and works fully without an update. Until a signed public feed is online,
+> `airlock update` is only useful against a feed you point it at — a URL or file
+> you host and sign yourself. Everything below describes that mechanism.
 
 ```bash
-airlock update            # refresh the indicator feed (requires a signature)
-airlock update --status   # what is active, and what it sits on top of
+airlock update --status              # what is active, and what it sits on top of
+airlock update ./feed.json           # install a feed you host (must be signed)
+airlock update https://you/feed.json # …or fetch one over HTTPS
 ```
 
 **Unsigned feeds are refused.** A tool that exists because people install code
@@ -375,3 +423,13 @@ A security tool that oversells its boundary is worse than none:
 
 See `THREATMODEL.md` for the attack-by-attack table, including the bypasses this
 project has already lost to once.
+
+## Security
+
+Found a way past the gate? Please report it privately through GitHub Security
+Advisories — see [`SECURITY.md`](SECURITY.md). Do not open a public issue for a
+vulnerability.
+
+## License
+
+Apache License 2.0 — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).

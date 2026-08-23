@@ -364,7 +364,8 @@ def status() -> str:
     d = downloaded()
     if not d:
         return (f"indicators: {total} active — bundled floor v{b.get('version', 0)} "
-                f"only (run `airlock update`)")
+                f"(no hosted feed published yet; `airlock update <url|file>` "
+                f"installs one you point it at)")
     age = ""
     if d.get("updated"):
         try:
