@@ -44,7 +44,7 @@ runs:
         set -o pipefail
         args="--min-severity ${{ inputs.min-severity }} --no-color"
         [ "${{ inputs.fail-on-findings }}" = "true" ] && args="$args --fail-on-findings"
-        status=0
+        rc=0
         scanned=0
         for p in ${{ inputs.paths }}; do
           if [ ! -e "$p" ]; then
@@ -53,10 +53,10 @@ runs:
           fi
           scanned=$((scanned+1))
           echo "::group::airlock scan $p"
-          airlock scan "$p" $args || status=$?
+          airlock scan "$p" $args || rc=$?
           echo "::endgroup::"
         done
         if [ "$scanned" = "0" ]; then
           echo "airlock: nothing to scan — none of the configured paths exist"
         fi
-        exit $status
+        exit $rc

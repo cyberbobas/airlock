@@ -235,6 +235,27 @@ def main():
             json.loads((h3 / ".cursor" / "mcp.json").read_text())["mcpServers"]["curhome"],
             (work / ".cursor" / "mcp.json").read_text()[:200])
 
+    # ---- 6d. a broken store must not abort init for the others ----------
+    # A stranger's malformed config (Cursor/Cline/etc.) once raised SystemExit
+    # through _load_json and killed the whole init, leaving the hook half-wired.
+    h4 = pathlib.Path(tempfile.mkdtemp(prefix="airlock-broken-"))
+    (h4 / ".claude").mkdir()
+    proj4 = h4 / "proj"; proj4.mkdir()
+    (proj4 / ".mcp.json").write_text('{"mcpServers":{"ok":{"command":"uvx","args":["a"]}}}')
+    (h4 / ".cursor").mkdir()
+    (h4 / ".cursor" / "mcp.json").write_text("this is not json {{{")
+    env4 = _env(h4 / ".airlock", proj4)
+    env4["HOME"] = str(h4)
+    env4["CLAUDE_SETTINGS"] = str(h4 / ".claude" / "settings.json")
+    r4 = _cli(["init", "--profile", "default"], env4)
+    s.check("init survives a malformed store instead of aborting",
+            r4.returncode == 0, r4.stderr[-200:])
+    s.check("init still wires the hook past the broken store",
+            "airlock" in (h4 / ".claude" / "settings.json").read_text())
+    s.check("init still wraps the valid store past the broken one",
+            "_airlock_original" in
+            json.loads((proj4 / ".mcp.json").read_text())["mcpServers"]["ok"])
+
     # ---- 7. the report exists and says something --------------------
     from airlock import audit
     os.environ["AIRLOCK_HOME"] = str(fake / ".airlock")

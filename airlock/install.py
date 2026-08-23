@@ -364,7 +364,17 @@ def _is_wrapped(spec: dict) -> bool:
 
 def wrap_servers(path: Path, res: Result, unwrap: bool = False, *,
                  label: str = "") -> int:
-    data = _load_json(path)
+    # A store belongs to some other agent and may be malformed through no fault
+    # of the user's. _load_json raises SystemExit on bad JSON (right for our own
+    # policy/settings), but here it would abort the whole init/uninstall over one
+    # stranger's broken config — leaving the hook half-wired. Skip it with a note.
+    try:
+        data = _load_json(path)
+    except SystemExit:
+        tag = f"{label}: " if label else ""
+        res.note(f"{tag}{path} is not valid JSON — skipped (fix or remove it, "
+                 f"then re-run)")
+        return 0
     maps = _server_maps(data)
     if not maps:
         return 0

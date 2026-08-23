@@ -474,9 +474,12 @@ def cmd_propose(a) -> int:
     print()
     if a.apply:
         pol = _policy()
+        # the file grants actually land in — not pol.path, which for a bundled
+        # profile is the read-only shipped file, not the personal copy written to
+        dest = grants.target_policy(pol)
         added, skipped, held = proposemod.apply(
             pol, prop, include_shell=a.include_shell)
-        print(f"  {_C['l']}✓{_C['0']} applied {added} grant(s) to {pol.path}"
+        print(f"  {_C['l']}✓{_C['0']} applied {added} grant(s) to {dest}"
               + (f" ({skipped} already present)" if skipped else ""))
         if held:
             print(f"  {_C['m']}!{_C['0']} held back {held} shell grant(s) — a bare "
