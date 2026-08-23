@@ -104,6 +104,10 @@ def _call(server, home, mode, timeout, url="https://unlisted.example/x"):
     env = dict(os.environ, PYTHONPATH=str(ROOT), AIRLOCK_HOME=str(home),
                AIRLOCK_QUIET="1", AIRLOCK_NOTIFY="0", AIRLOCK_MODE=mode,
                AIRLOCK_ASK_TIMEOUT=str(timeout), AIRLOCK_POLICY=FIXTURE,
+               # these cases probe the channel/daemon semantics, so turn off the
+               # remembered-answer cache — otherwise a prior identical ask's
+               # answer would resolve the next one and mask the fallback path.
+               AIRLOCK_ASK_REMEMBER="0",
                # pin the chain: a box with zenity and a DISPLAY would pop a real
                # dialog and make the measurement meaningless
                AIRLOCK_ASK_BACKEND="socket,fallback")
@@ -239,6 +243,32 @@ def main():
     got, dt = _call(srv, home, "enforce", 3)
     s.check("a stale socket file does not hang the gate", dt < 10, dt)
     s.check("...and it fails closed", got == "BLOCK", got)
+
+    # ---- remembered answers: a repeat of the same ask does not re-prompt ---
+    rhome = pathlib.Path(tempfile.mkdtemp(prefix="ask-remember-"))
+    os.environ["AIRLOCK_HOME"] = str(rhome)
+    os.environ.pop("AIRLOCK_ASK_REMEMBER", None)
+    os.environ["AIRLOCK_ASK_BACKEND"] = "fallback"
+    from airlock import ask
+    req = {"server": "repo", "tool": "summarize",
+           "resource": "/home/user/proj/a.py", "reason": "review"}
+    s.check("a fresh question is not remembered", ask.recall(req) is None, ask.recall(req))
+    ask.remember(req, "allow")
+    d, via = ask.resolve_ask(req, ask_fallback="block")
+    s.check("a remembered allow silences the repeat without a backend",
+            (d, via) == ("allow", "remembered"), (d, via))
+    # a different target is NOT covered, and a fallback answer is never cached
+    other = dict(req, resource="/home/user/proj/b.py")
+    d2, via2 = ask.resolve_ask(other, ask_fallback="block")
+    s.check("a different target still asks (exact-match only)",
+            via2 == "fallback" and ask.recall(other) is None, (via2, ask.recall(other)))
+    # AIRLOCK_ASK_REMEMBER=0 turns it off
+    os.environ["AIRLOCK_ASK_REMEMBER"] = "0"
+    s.check("AIRLOCK_ASK_REMEMBER=0 disables the cache",
+            ask.resolve_ask(req, ask_fallback="block") == ("block", "fallback"),
+            ask.resolve_ask(req, ask_fallback="block"))
+    os.environ.pop("AIRLOCK_ASK_REMEMBER", None)
+    os.environ.pop("AIRLOCK_ASK_BACKEND", None)
 
     return s.report()
 

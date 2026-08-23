@@ -296,6 +296,15 @@ def cmd_doctor(a) -> int:
                              f"{lands.upper()} (run: airlock askd)"))
     else:
         rows.append(("ok", f"ask reaches you via: {chan}"))
+    from .ask import _remember_ttl
+    ttl = _remember_ttl()
+    if ttl > 0:
+        rows.append(("ok", f"remembered answers: an `allow`/`block` you give is "
+                           f"reused for {int(ttl)}s so a retry does not re-ask "
+                           f"(AIRLOCK_ASK_REMEMBER)"))
+    else:
+        rows.append(("warn", "remembered answers off (AIRLOCK_ASK_REMEMBER=0) — "
+                             "every repeated `ask` re-prompts"))
     rows.append(("ok", f"block notifications: {notify._backend() or 'none available'}")
                 if notify.enabled() and notify._backend() else
                 ("warn", "no desktop notifier — a block will be silent "

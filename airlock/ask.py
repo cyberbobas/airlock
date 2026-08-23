@@ -19,6 +19,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from .audit import home
@@ -193,9 +194,81 @@ def _which(cmd: str) -> bool:
     return which(cmd) is not None
 
 
+# ---- remembered answers ------------------------------------------------
+# A human who just answered "allow this tool on this target" does not want the
+# same dialog again thirty seconds later when the agent retries — that is the
+# fatigue that gets a security tool uninstalled. So an answer from a real human
+# backend is remembered, briefly, keyed by exactly what was asked (server, tool,
+# target). Like sudo's timestamp: a short window, tunable, and off if you set it
+# to 0. Absolute blocks and scan escalations are decided BEFORE an ask is ever
+# raised, so remembering an "allow" can never resurrect something the policy
+# forbids outright — it only silences a repeat of the same reviewed question.
+def _cache_path() -> Path:
+    return home() / "ask_cache.json"
+
+
+def _remember_ttl() -> float:
+    try:
+        return float(os.environ.get("AIRLOCK_ASK_REMEMBER", "300"))
+    except ValueError:
+        return 300.0
+
+
+def _ask_key(req: dict) -> str:
+    return "\x00".join([str(req.get("server", "")), str(req.get("tool", "")),
+                        str(req.get("resource", ""))])
+
+
+def recall(req: dict) -> str | None:
+    """A still-valid remembered answer for this exact question, or None."""
+    p = _cache_path()
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    entry = data.get(_ask_key(req))
+    if not isinstance(entry, dict):
+        return None
+    if entry.get("decision") in (ALLOW, BLOCK) and entry.get("expires", 0) > time.time():
+        return entry["decision"]
+    return None
+
+
+def remember(req: dict, decision: str) -> None:
+    """Store a human's answer for AIRLOCK_ASK_REMEMBER seconds; prune expired."""
+    ttl = _remember_ttl()
+    if ttl <= 0 or decision not in (ALLOW, BLOCK):
+        return
+    p = _cache_path()
+    now = time.time()
+    try:
+        data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+        if not isinstance(data, dict):
+            data = {}
+    except Exception:
+        data = {}
+    data = {k: v for k, v in data.items()
+            if isinstance(v, dict) and v.get("expires", 0) > now}
+    data[_ask_key(req)] = {"decision": decision, "expires": now + ttl,
+                           "reason": req.get("reason", "")}
+    tmp = p.with_suffix(".json.tmp")
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, p)
+    except OSError:
+        pass
+
+
 def resolve_ask(req: dict, *, ask_fallback: str = BLOCK,
                 timeout: float = 60.0) -> tuple[str, str]:
     """Return (decision, via)."""
+    if _remember_ttl() > 0:
+        cached = recall(req)
+        if cached is not None:
+            return cached, "remembered"
     env = os.environ.get("AIRLOCK_ASK_BACKEND", "").strip()
     if env:
         backends = [b.strip() for b in env.split(",") if b.strip()]
@@ -211,5 +284,6 @@ def resolve_ask(req: dict, *, ask_fallback: str = BLOCK,
             continue
         d = fn(req, timeout)
         if d in (ALLOW, BLOCK):
+            remember(req, d)            # a real human answer — silence its repeats
             return d, b
     return ask_fallback, "fallback"

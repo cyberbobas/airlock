@@ -44,6 +44,7 @@ class Report:
     asked: int = 0
     ask_to_agent: int = 0      # handed to the agent's own approval prompt (hook)
     ask_answered: int = 0      # a human answered a dialog (proxy + ask channel)
+    ask_remembered: int = 0    # auto-resolved from a recent answer — no prompt
     ask_unattended: int = 0    # nobody was there; resolved by the mode
     ask_too_late: int = 0      # a human answered, after the call had been decided
     handed_ran: int = 0        # handed to the agent's own prompt, and it ran
@@ -68,6 +69,7 @@ class Report:
                         "tools": self.blocked_tools.most_common()},
             "human": {"asked": self.asked, "to_agent_prompt": self.ask_to_agent,
                   "answered_by_you": self.ask_answered,
+                  "remembered": self.ask_remembered,
                   "unattended": self.ask_unattended,
                   "answered_too_late": self.ask_too_late,
                   "handed_over_and_ran": self.handed_ran,
@@ -155,6 +157,8 @@ def build(days: int = 7, path: Path | None = None) -> Report:
                     r.ask_to_agent += 1
                     handed.append((rec.get("session", ""), rec.get("tool", ""),
                                    rec.get("args_digest", "")))
+                elif "[ask:remembered]" in reason:
+                    r.ask_remembered += 1
                 elif "[ask:fallback]" in reason:
                     r.ask_unattended += 1
                 elif "[ask:" in reason:
@@ -291,12 +295,19 @@ def render(r: Report, *, color: bool = True) -> str:
             o.append(f"    {c['m']}·{c['0']} {r.ask_too_late} answer(s) arrived after the "
                      f"call had already been decided — raise AIRLOCK_ASK_TIMEOUT "
                      f"if you want them to count")
+        if r.ask_remembered:
+            parts.append(f"{r.ask_remembered} auto-resolved from a remembered "
+                         f"answer (no prompt)")
         if r.ask_unattended:
             how = ("allowed" if r.ask_to_allow >= r.ask_to_block else "refused")
             parts.append(f"{r.ask_unattended} resolved unattended ({how})")
         o.append(f"    {r.asked} call(s) needed a decision — " + ", ".join(parts))
-        o.append(f"    {c['d']}~{r.asked / max(1, r.days):.1f} interruptions per day"
-                 f"{c['0']}")
+        # only the ones that actually popped a prompt count as interruptions;
+        # remembered and unattended did not stop anyone.
+        prompts = r.ask_to_agent + r.ask_answered
+        o.append(f"    {c['d']}~{prompts / max(1, r.days):.1f} interruptions per day"
+                 + (f" ({r.ask_remembered} more silenced by remembered answers)"
+                    if r.ask_remembered else "") + f"{c['0']}")
         if r.ask_unattended:
             o.append(f"    {c['m']}·{c['0']} {r.ask_unattended} resolved with nobody "
                      f"there — run `airlock askd` to be asked for real")
@@ -352,8 +363,10 @@ def render_markdown(r: Report) -> str:
         o.append("")
     o += ["## Human involvement", "",
           f"- {r.asked} call(s) needed a decision over {r.days} days "
-          f"(~{r.asked / max(1, r.days):.1f}/day)",
+          f"(~{(r.ask_to_agent + r.ask_answered) / max(1, r.days):.1f} actual "
+          f"interruptions/day)",
           f"- {r.ask_to_agent} handed to the agent's approval prompt, "
-          f"{r.ask_answered} answered directly, {r.ask_unattended} unattended",
+          f"{r.ask_answered} answered directly, {r.ask_remembered} auto-resolved "
+          f"from a remembered answer, {r.ask_unattended} unattended",
           f"- audit chain: {'intact' if r.chain_ok else 'BROKEN — ' + r.chain_msg}", ""]
     return "\n".join(o)
