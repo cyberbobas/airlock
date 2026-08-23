@@ -4,3 +4,7 @@ build/
 dist/
 *.egg-info/
 .venv/
+
+# stray key material / signing artifacts — never publish these
+*.key
+audit.key
