@@ -37,6 +37,8 @@ def daemon_listening(timeout: float = 0.5) -> bool:
     mere existence as "a human is reachable" made `doctor` report a channel
     that was not there, and made every `ask` pay a timeout before failing safe.
     """
+    if not hasattr(socket, "AF_UNIX"):
+        return False
     p = sock_path()
     if not p.exists():
         return False
@@ -82,6 +84,8 @@ def describe_channel() -> str:
 
 
 def _via_socket(req: dict, timeout: float) -> str | None:
+    if not hasattr(socket, "AF_UNIX"):
+        return None
     p = sock_path()
     if not p.exists():
         return None

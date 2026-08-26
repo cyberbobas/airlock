@@ -421,7 +421,10 @@ class Proxy:
                          reason=f"signal {signal.Signals(signum).name}")
             self.shutdown()
             raise SystemExit(128 + signum)
-        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        for signame in ("SIGTERM", "SIGINT", "SIGHUP"):   # SIGHUP is POSIX-only
+            sig = getattr(signal, signame, None)
+            if sig is None:
+                continue
             try:
                 signal.signal(sig, bye)
             except (ValueError, OSError):

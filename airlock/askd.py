@@ -80,6 +80,12 @@ def main(argv=None) -> int:
             print("airlock-askd: --auto needs 'allow' or 'block'", file=sys.stderr)
             return 2
         auto = argv[i + 1]
+    if not hasattr(socket, "AF_UNIX"):
+        print("airlock-askd: the approval daemon needs unix domain sockets, "
+              "which this platform lacks. `ask` verdicts fall back to the "
+              "policy's ask_fallback here; run the daemon under WSL if you want "
+              "interactive approvals on Windows.", file=sys.stderr)
+        return 2
     p = sock_path()
     if p.exists():
         p.unlink()
@@ -101,7 +107,10 @@ def main(argv=None) -> int:
     # while `airlock doctor` still reported that asks would reach a human.
     def bye(signum, _frame):
         raise KeyboardInterrupt
-    for sig in (signal.SIGTERM, signal.SIGHUP):
+    for signame in ("SIGTERM", "SIGHUP"):          # SIGHUP does not exist on Windows
+        sig = getattr(signal, signame, None)
+        if sig is None:
+            continue
         try:
             signal.signal(sig, bye)
         except (ValueError, OSError):

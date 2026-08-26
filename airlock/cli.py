@@ -179,10 +179,30 @@ def cmd_contracts(a) -> int:
     return 0
 
 
+def _follow(p: pathlib.Path) -> int:
+    """Portable `tail -f`: stream new lines until Ctrl-C. Works where there is
+    no `tail` (Windows), and does not depend on exec()."""
+    import time as _t
+    pos = p.stat().st_size if p.exists() else 0
+    try:
+        while True:
+            if p.exists():
+                with open(p, "r", encoding="utf-8", errors="replace") as f:
+                    f.seek(pos)
+                    chunk = f.read()
+                    pos = f.tell()
+                if chunk:
+                    sys.stdout.write(chunk)
+                    sys.stdout.flush()
+            _t.sleep(0.4)
+    except KeyboardInterrupt:
+        return 0
+
+
 def cmd_log(a) -> int:
     p = audit.audit_path()
     if a.follow:
-        os.execvp("tail", ["tail", "-f", str(p)])
+        return _follow(p)
     if not p.exists():
         print("  no audit log yet")
         return 0

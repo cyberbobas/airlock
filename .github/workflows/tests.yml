@@ -10,6 +10,7 @@ permissions:
   contents: read
 
 jobs:
+  # Full suite on POSIX (it uses shell fakes, unix sockets and /dev/tty).
   test:
     name: py${{ matrix.python-version }} · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -33,3 +34,26 @@ jobs:
 
       - name: Run the full test suite
         run: python3 tests/run_all.py
+
+  # Windows: the core gating path (install -> init -> demo -> uninstall). The
+  # POSIX-only extras (approval daemon, /dev/tty, shell fakes) are not exercised.
+  windows-smoke:
+    name: windows-smoke · py${{ matrix.python-version }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Airlock
+        run: python -m pip install .
+
+      - name: Run the cross-platform smoke test
+        run: python tests/smoke.py

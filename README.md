@@ -15,11 +15,30 @@ where a skill that reads clean and behaves badly actually gets stopped.
 
 ## Install
 
+**One command:**
+
 ```bash
-pipx install airlock-agent      # or: uv tool install airlock-agent
-                                # macOS: brew install airlock  (tap, coming with launch)
-airlock init                    # wires the hook, wraps your MCP servers
-airlock doctor                  # confirms what is actually enforcing
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/airlock-agent/airlock/main/install.sh | sh
+```
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/airlock-agent/airlock/main/install.ps1 | iex
+```
+
+**Or with your own package manager:**
+
+```bash
+pipx install airlock-agent      # or: uv tool install airlock-agent / pip install airlock-agent
+brew install airlock            # macOS (tap, coming with launch)
+```
+
+Then:
+
+```bash
+airlock demo                    # watch it stop a key-theft (nothing of yours touched)
+airlock init                    # wire the hook, wrap every agent's MCP servers
+airlock doctor                  # confirm what is actually enforcing
 ```
 
 `airlock init` backs up every file it edits and marks every line it adds.
@@ -33,7 +52,11 @@ after installing, your edits win and it falls back to a semantic unwrap.
 touched. `airlock uninstall` asks for confirmation first; pass `-y` to skip the
 prompt when running non-interactively.
 
-Requires Python 3.11+. macOS and Linux. One dependency (PyYAML).
+Requires Python 3.11+. Linux, macOS and Windows — the gate (hook + MCP proxy),
+`init`/`uninstall`, `scan`, `check`, `demo`, `doctor`, `policy propose` and
+`monitor` run on all three (Windows core is CI-tested). The interactive approval
+daemon and desktop toasts are POSIX-only; on Windows an `ask` uses the policy's
+fallback (run under WSL for the full experience). One dependency (PyYAML).
 
 **See it work in one command** — no setup, no config, nothing of yours touched:
 
