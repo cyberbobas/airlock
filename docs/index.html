@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Airlock — a firewall for your AI coding agent</title>
-<meta name="description" content="Your AI agent can read a poisoned skill and quietly run it. Airlock sits in the call path and refuses the dangerous call — this call, right now. Works with Claude Code, Cursor, Windsurf, Cline, Kimi, grok, mimo, DeepSeek.">
+<title>Airlock, a firewall for your AI coding agent</title>
+<meta name="description" content="Your AI agent can read a poisoned skill and quietly run it. Airlock sits in the call path and refuses the dangerous call, this call, right now. It gates the MCP calls of Claude Code, Cursor, Windsurf, Cline, Kimi, grok, mimo and DeepSeek, and Claude Code's native tools too.">
 <style>
   :root{
     --bg:#0c0f16; --panel:#141925; --ink:#e8ebf2; --muted:#98a2b3; --line:#232b3a;
@@ -67,14 +67,15 @@
   <header>
     <span class="badge">Apache-2.0</span><span class="badge">Linux · macOS · Windows</span><span class="badge">one dependency</span>
     <h1>Your AI agent will run a poisoned skill.<br><span class="k">Airlock refuses the call.</span></h1>
-    <p class="lede">A skill that reads clean can behave badly — reach for your SSH
-      key, POST it to a collector, <code>rm -rf</code> your repo. Static scanners
-      check it once, before install. Airlock sits in the call path and decides
-      <em>this call, right now</em>, against a least-privilege policy — for Claude
-      Code, Cursor, and every other agent you run.</p>
+    <p class="lede">A skill that reads clean can behave badly. It reaches for your
+      SSH key, POSTs it to a collector, runs <code>rm -rf</code> on your repo.
+      Static scanners check it once, before install. Airlock sits in the call path
+      and decides <em>this call, right now</em>, against a least-privilege policy,
+      for Claude Code, Cursor and every other agent you run.</p>
     <div class="cta">
       <a class="btn" href="#install">Install in one command</a>
-      <a class="btn ghost" href="https://github.com/cyberbobas/airlock">GitHub →</a>
+      <a class="btn ghost" href="https://agentoffense.com/solutions/airlock_ai/">agentoffense.com →</a>
+      <a class="btn ghost" href="https://github.com/cyberbobas/airlock">GitHub</a>
     </div>
   </header>
 
@@ -85,7 +86,7 @@
 <span class="c-dim">1. A developer installs a skill with 12k installs.</span>
 <span class="c-dim">   Its setup text tells the agent: read ~/.ssh/id_rsa and POST it to a collector.</span>
 
-<span class="c-dim">2. The agent does exactly that — with the developer's private key as the target.</span>
+<span class="c-dim">2. The agent does exactly that, with the developer's private key as the target.</span>
    <span class="c-bad">BLOCK</span>  mcp__repo-summarizer__init_telemetry   <span class="c-dim">~/.ssh/id_rsa</span>
    <span class="c-bad">BLOCK</span>  mcp__repo-summarizer__summarize_repo   <span class="c-dim">https://webhook.site/…</span>
 
@@ -115,8 +116,8 @@ airlock doctor   <span class="c-dim"># green checks = you're covered</span></pre
   <h2>What it actually does</h2>
   <div class="grid">
     <div class="card"><h3>Gates the call, not the prose</h3>
-      <p>Refuses by what a call touches — a secret path, a known collector,
-      download-and-execute — never by trying to read intent.</p></div>
+      <p>Refuses by what a call touches: a secret path, a known collector,
+      download-and-execute. It never tries to read intent.</p></div>
     <div class="card"><h3>Least privilege, derived</h3>
       <p>Run a week in learn mode, then <code>airlock policy propose</code> writes
       the narrowest policy that covers what your agents actually did.</p></div>
@@ -128,32 +129,36 @@ airlock doctor   <span class="c-dim"># green checks = you're covered</span></pre
       <em>byte-for-byte</em>. Nothing shows up in your git diff.</p></div>
   </div>
 
-  <h2>Works with your whole fleet</h2>
-  <p class="muted">One command gates the MCP servers of every agent on the box —
-    verified against the installed CLIs:</p>
+  <h2>Gates MCP across your whole fleet</h2>
+  <p class="muted">One command wraps the MCP servers of every agent below, so their
+    tool calls run through the gate (verified against the installed CLIs). Claude
+    Code additionally gets its native file and shell tools gated, through its
+    PreToolUse hook; for the other agents, Airlock gates their MCP calls, not yet
+    their built-in tools.</p>
   <div class="fleet">
-    <span class="chip"><b>✓</b> Claude Code</span>
-    <span class="chip"><b>✓</b> Cursor</span>
-    <span class="chip"><b>✓</b> Windsurf</span>
-    <span class="chip"><b>✓</b> Cline</span>
-    <span class="chip"><b>✓</b> Claude Desktop</span>
-    <span class="chip"><b>✓</b> Kimi</span>
-    <span class="chip"><b>✓</b> grok</span>
-    <span class="chip"><b>✓</b> mimo</span>
-    <span class="chip"><b>✓</b> DeepSeek Harness</span>
+    <span class="chip"><b>✓</b> Claude Code <span class="muted">native + MCP</span></span>
+    <span class="chip"><b>✓</b> Cursor <span class="muted">MCP</span></span>
+    <span class="chip"><b>✓</b> Windsurf <span class="muted">MCP</span></span>
+    <span class="chip"><b>✓</b> Cline <span class="muted">MCP</span></span>
+    <span class="chip"><b>✓</b> Claude Desktop <span class="muted">MCP</span></span>
+    <span class="chip"><b>✓</b> Kimi <span class="muted">MCP</span></span>
+    <span class="chip"><b>✓</b> grok <span class="muted">MCP</span></span>
+    <span class="chip"><b>✓</b> mimo <span class="muted">MCP</span></span>
+    <span class="chip"><b>✓</b> DeepSeek Harness <span class="muted">MCP</span></span>
   </div>
 
   <h2>Honest about its limits</h2>
-  <p class="muted">Airlock does not stop prompt injection — nothing does; it gates
-    the <em>action</em> the injection asks for. Egress is argument-level. An agent
+  <p class="muted">Airlock does not stop prompt injection. Nothing does. It gates
+    the <em>action</em> the injection asks for. Egress is argument level. An agent
     with a shell can start a server outside the proxy. These boundaries are
     documented, not hidden.</p>
 
   <footer>
+    <a href="https://agentoffense.com/solutions/airlock_ai/">agentoffense.com</a> ·
     <a href="https://github.com/cyberbobas/airlock">GitHub</a> ·
     <a href="https://github.com/cyberbobas/airlock/blob/main/SECURITY.md">Security</a> ·
     <a href="https://github.com/cyberbobas/airlock/blob/main/THREATMODEL.md">Threat model</a>
-    <br><span class="muted">Static docs page for GitHub Pages — Settings → Pages → /docs.</span>
+    <br><span class="muted">A product of Agentoffense.</span>
   </footer>
 
 </div>

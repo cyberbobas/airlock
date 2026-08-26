@@ -1,9 +1,11 @@
-# Airlock — runtime firewall for AI coding agents
+# Airlock, a runtime firewall for AI coding agents
 
 Gate every tool call, MCP call and skill your agent runs against a
 least-privilege policy. Static scanners check a skill once, before install.
-Airlock sits in the call path and decides **this call, right now** — which is
+Airlock sits in the call path and decides **this call, right now**. That is
 where a skill that reads clean and behaves badly actually gets stopped.
+
+Part of [Agentoffense](https://agentoffense.com/solutions/airlock_ai/).
 
 ```
  agent ──native tools──▶ [PreToolUse hook] ─┐
@@ -211,13 +213,15 @@ If your team is on mixed agents: every agent's **MCP** traffic is gated the same
 way. Only Claude Code's own built-in tools currently get the second gate. We
 would rather say that than have you find out during a rollout.
 
-`airlock init` finds the MCP servers each agent actually runs — not just a
+`airlock init` finds the MCP servers each agent actually runs. Not just a
 project `.mcp.json`, but Cursor, Windsurf, Cline, Claude Desktop and Kimi CLI
 (standard `mcpServers` JSON), **grok** (its `[mcp_servers]` TOML), **mimo** (its
 `mcp` JSON) and **DeepSeek Harness** (its `dsh-mcp-client` entries in cordis
-profile YAML) — the last three verified against the installed CLIs, which read
-the wrapped config and launch each server through the gate. It deliberately
-leaves Claude Code's live
+profile YAML). The last three are verified against the installed CLIs, which read
+the wrapped config and launch each server through the gate. For every agent
+except Claude Code this gates the **MCP calls**, not the agent's own built-in
+file and shell tools (only Claude Code has the second gate, its PreToolUse hook).
+It deliberately leaves Claude Code's live
 `~/.claude.json` alone: those MCP calls already go through the PreToolUse hook
 (same policy, holds and contracts), so wrapping them would only double-gate a
 file Claude Code rewrites out from under us. `airlock doctor` lists any server
