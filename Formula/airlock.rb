@@ -1,12 +1,4 @@
-# Homebrew formula for Airlock.
-#
-# TEMPLATE — fill in the two sha256 values and the release tag before tapping:
-#   1. cut a GitHub release v<version>, then:  brew fetch --build-from-source ...
-#      or:  shasum -a 256 <the archive tarball>
-#   2. refresh the PyYAML resource:  brew update-python-resources Formula/airlock.rb
-#
-# Once cyberbobas/homebrew-tap exists:
-#   brew tap cyberbobas/tap && brew install airlock
+# Homebrew formula for Airlock.  Tap: brew tap cyberbobas/tap && brew install airlock
 class Airlock < Formula
   include Language::Python::Virtualenv
 
