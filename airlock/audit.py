@@ -414,7 +414,8 @@ def _write_head(count: int, last: str) -> None:
             _head_fd = (key, os.open(p, os.O_WRONLY | os.O_CREAT, 0o600))
         fd = _head_fd[1]
         os.ftruncate(fd, 0)
-        os.pwrite(fd, blob, 0)
+        os.lseek(fd, 0, os.SEEK_SET)      # os.pwrite is POSIX-only (absent on Windows)
+        os.write(fd, blob)
         _head_cache = h
     except OSError:
         _head_cache = None    # a checkpoint we cannot write must not stop a decision

@@ -53,7 +53,9 @@ def main():
             modes)
 
     # ---- 3. ${workspace} makes a policy portable ------------------------
-    ws = pathlib.Path(tempfile.mkdtemp(prefix="airlock-ws-"))
+    # resolve() so it matches config.workspace(), which resolves symlinks (macOS
+    # $TMPDIR is /var/folders/… -> /private/var/…).
+    ws = pathlib.Path(tempfile.mkdtemp(prefix="airlock-ws-")).resolve()
     os.environ["AIRLOCK_WORKSPACE"] = str(ws)
     p = Policy.load(config.profile_path("default"))
     s.check("${workspace} expands to this machine's workspace",
