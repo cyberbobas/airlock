@@ -13,7 +13,7 @@ class Airlock < Formula
   desc "Runtime firewall for AI coding agents — gate every tool, MCP and skill call"
   homepage "https://github.com/cyberbobas/airlock"
   url "https://github.com/cyberbobas/airlock/archive/refs/tags/v0.4.6.tar.gz"
-  sha256 "REPLACE_WITH_RELEASE_TARBALL_SHA256"
+  sha256 "76eae04692bc78acda0eec99eb8630a653072ca29d485cbe9ec92038ffd93b71"
   license "Apache-2.0"
 
   depends_on "python@3.12"
