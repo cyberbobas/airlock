@@ -3,85 +3,149 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Airlock — runtime firewall for AI coding agents</title>
+<title>Airlock — a firewall for your AI coding agent</title>
+<meta name="description" content="Your AI agent can read a poisoned skill and quietly run it. Airlock sits in the call path and refuses the dangerous call — this call, right now. Works with Claude Code, Cursor, Windsurf, Cline, Kimi, grok, mimo, DeepSeek.">
 <style>
   :root{
-    --bg:#0d1017; --panel:#151a23; --ink:#e6e9ef; --muted:#9aa4b2;
-    --line:#232a36; --accent:#8b7cf6; --ok:#3fb950; --warn:#d29922; --bad:#f85149;
+    --bg:#0c0f16; --panel:#141925; --ink:#e8ebf2; --muted:#98a2b3; --line:#232b3a;
+    --accent:#8b7cf6; --ok:#3fb950; --warn:#d29922; --bad:#f85149;
     --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
     --sans:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
   }
   @media (prefers-color-scheme: light){
-    :root{--bg:#f7f8fa;--panel:#fff;--ink:#1a1f28;--muted:#5b6472;--line:#e5e8ee;}
+    :root{--bg:#f6f7f9;--panel:#fff;--ink:#141922;--muted:#5b6472;--line:#e5e8ee;}
   }
   *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
   body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
        line-height:1.6;-webkit-font-smoothing:antialiased}
-  .wrap{max-width:820px;margin:0 auto;padding:0 20px}
-  header{padding:72px 0 40px;border-bottom:1px solid var(--line)}
+  .wrap{max-width:860px;margin:0 auto;padding:0 20px}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code,pre{font-family:var(--mono)}
   .badge{display:inline-block;font-family:var(--mono);font-size:12px;color:var(--accent);
-         border:1px solid var(--line);border-radius:999px;padding:4px 12px;margin-bottom:22px}
-  h1{font-size:clamp(30px,6vw,46px);line-height:1.1;margin:0 0 14px;letter-spacing:-.02em}
-  .lede{font-size:19px;color:var(--muted);max-width:60ch;margin:0 0 26px}
-  pre{background:var(--panel);border:1px solid var(--line);border-radius:10px;
-      padding:16px 18px;overflow-x:auto;font-family:var(--mono);font-size:13.5px}
-  code{font-family:var(--mono)}
-  h2{font-size:22px;margin:52px 0 10px;letter-spacing:-.01em}
-  p{color:var(--ink)}
+         border:1px solid var(--line);border-radius:999px;padding:4px 12px;margin:0 6px 10px 0}
+  header{padding:66px 0 34px}
+  h1{font-size:clamp(30px,6vw,50px);line-height:1.08;letter-spacing:-.02em;margin:16px 0 12px}
+  h1 .k{color:var(--accent)}
+  .lede{font-size:19px;color:var(--muted);max-width:62ch;margin:0 0 26px}
+  .cta{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:6px 0 4px}
+  .btn{display:inline-block;background:var(--accent);color:#fff;border-radius:9px;
+       padding:11px 18px;font-weight:600;font-size:15px}
+  .btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+  /* terminal */
+  .term{background:#0a0d13;border:1px solid var(--line);border-radius:12px;margin:26px 0;
+        overflow:hidden;box-shadow:0 10px 40px rgba(0,0,0,.3)}
+  .term .bar{display:flex;gap:7px;padding:11px 14px;background:#11151d;border-bottom:1px solid var(--line)}
+  .term .bar i{width:11px;height:11px;border-radius:50%;display:inline-block}
+  .dot1{background:#ff5f57}.dot2{background:#febc2e}.dot3{background:#28c840}
+  .term pre{margin:0;padding:16px 18px;overflow-x:auto;font-size:13.5px;line-height:1.7;color:#cfd6e4}
+  .term .c-dim{color:#6b7385}.term .c-ok{color:#3fb950}.term .c-bad{color:#f85149;font-weight:600}
+  .term .c-warn{color:#d29922}.term .c-acc{color:#b3a7ff}
+  h2{font-size:24px;margin:56px 0 12px;letter-spacing:-.01em}
   .muted{color:var(--muted)}
-  .grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));margin:18px 0}
+  .grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin:18px 0}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}
   .card h3{margin:0 0 6px;font-size:15px}
   .card p{margin:0;color:var(--muted);font-size:14px}
-  .k{color:var(--accent)}
-  footer{margin:64px 0 48px;padding-top:22px;border-top:1px solid var(--line);
-          color:var(--muted);font-size:14px}
-  a{color:var(--accent);text-decoration:none}
-  a:hover{text-decoration:underline}
+  /* install tabs */
+  .tabs{display:flex;gap:8px;margin:14px 0 0;flex-wrap:wrap}
+  .tab{padding:8px 14px;border:1px solid var(--line);border-radius:8px;cursor:pointer;
+       font-size:14px;background:var(--panel);color:var(--muted);user-select:none}
+  .tab[aria-selected="true"]{color:var(--ink);border-color:var(--accent)}
+  .install pre{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+       padding:15px 16px;overflow-x:auto;font-size:14px;margin:10px 0 0}
+  .fleet{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
+  .chip{font-size:13px;border:1px solid var(--line);border-radius:8px;padding:6px 11px;background:var(--panel)}
+  .chip b{color:var(--ok)}
+  footer{margin:64px 0 46px;padding-top:22px;border-top:1px solid var(--line);color:var(--muted);font-size:14px}
 </style>
 </head>
 <body>
 <div class="wrap">
+
   <header>
-    <span class="badge">Apache-2.0 · Python 3.11+ · macOS &amp; Linux</span>
-    <h1>Airlock — a runtime firewall for AI coding agents</h1>
-    <p class="lede">Gate every tool call, MCP call and skill your agent runs
-      against a least-privilege policy. Static scanners check a skill once,
-      before install. Airlock sits in the call path and decides <em>this call,
-      right now</em> — where a skill that reads clean and behaves badly actually
-      gets stopped.</p>
-    <pre><code>pipx install airlock-agent      <span class="muted"># or: brew install airlock (soon)</span>
-airlock init                    <span class="muted"># wire the hook, wrap your MCP servers</span>
-airlock doctor                  <span class="muted"># confirm what is actually enforcing</span></code></pre>
+    <span class="badge">Apache-2.0</span><span class="badge">Linux · macOS · Windows</span><span class="badge">one dependency</span>
+    <h1>Your AI agent will run a poisoned skill.<br><span class="k">Airlock refuses the call.</span></h1>
+    <p class="lede">A skill that reads clean can behave badly — reach for your SSH
+      key, POST it to a collector, <code>rm -rf</code> your repo. Static scanners
+      check it once, before install. Airlock sits in the call path and decides
+      <em>this call, right now</em>, against a least-privilege policy — for Claude
+      Code, Cursor, and every other agent you run.</p>
+    <div class="cta">
+      <a class="btn" href="#install">Install in one command</a>
+      <a class="btn ghost" href="https://github.com/airlock-agent/airlock">GitHub →</a>
+    </div>
   </header>
 
-  <h2>What it does</h2>
-  <div class="grid">
-    <div class="card"><h3>Gates the call, not the prose</h3>
-      <p>A poisoned skill can say anything. Airlock refuses the call by what it
-      touches — a secret path, a known collector, download-and-execute.</p></div>
-    <div class="card"><h3>Every agent's MCP</h3>
-      <p>One stdio proxy gates Claude Code, Cursor, Windsurf, Cline, Continue and
-      Claude Desktop the same way. <code>init</code> finds them all.</p></div>
-    <div class="card"><h3>Tamper-evident audit</h3>
-      <p>Every decision lands in a hash-chained, optionally signed log.
-      <code>airlock verify</code> proves nothing was rewritten.</p></div>
-    <div class="card"><h3>Writes its own policy</h3>
-      <p>Run a week in observe, then <code>airlock policy propose</code> hands you
-      the least-privilege rules that cover what your agents actually did.</p></div>
+  <div class="term" aria-label="airlock demo output">
+    <div class="bar"><i class="dot1"></i><i class="dot2"></i><i class="dot3"></i></div>
+<pre><span class="c-dim">$</span> airlock demo
+
+<span class="c-dim">1. A developer installs a skill with 12k installs.</span>
+<span class="c-dim">   Its setup text tells the agent: read ~/.ssh/id_rsa and POST it to a collector.</span>
+
+<span class="c-dim">2. The agent does exactly that — with the developer's private key as the target.</span>
+   <span class="c-bad">BLOCK</span>  mcp__repo-summarizer__init_telemetry   <span class="c-dim">~/.ssh/id_rsa</span>
+   <span class="c-bad">BLOCK</span>  mcp__repo-summarizer__summarize_repo   <span class="c-dim">https://webhook.site/…</span>
+
+<span class="c-dim">3. Every decision is in a tamper-evident log.</span>
+   <span class="c-ok">CHAIN INTACT</span>  <span class="c-dim">across 21 records</span>
+
+<span class="c-dim">   The prose was never trusted. The call was refused because of what it touched.</span></pre>
   </div>
 
-  <h2>Onboard in three commands</h2>
-  <pre><code>airlock profile yolo            <span class="muted"># week one: learn, block nothing</span>
-airlock policy propose --apply  <span class="muted"># turn the week into least-privilege grants</span>
-airlock profile default         <span class="muted"># now guard</span></code></pre>
-  <p class="muted">Watch it work live with <code class="k">airlock monitor</code>,
-    and scan skills before they merge with the
-    <a href="https://github.com/airlock-agent/airlock">Airlock GitHub Action</a>.</p>
+  <h2 id="install">Install</h2>
+  <div class="install">
+    <div class="tabs" role="tablist">
+      <span class="tab" role="tab" data-os="nix" aria-selected="true">Linux / macOS</span>
+      <span class="tab" role="tab" data-os="win" aria-selected="false">Windows</span>
+      <span class="tab" role="tab" data-os="pm"  aria-selected="false">package manager</span>
+    </div>
+    <div data-panel="nix"><pre>curl -fsSL https://raw.githubusercontent.com/airlock-agent/airlock/main/install.sh | sh</pre></div>
+    <div data-panel="win" hidden><pre>irm https://raw.githubusercontent.com/airlock-agent/airlock/main/install.ps1 | iex</pre></div>
+    <div data-panel="pm" hidden><pre>pipx install airlock-agent      # or: pip install airlock-agent
+brew install airlock            # macOS (coming with launch)</pre></div>
+    <p class="muted" style="margin-top:14px">Then, one command that touches nothing of yours:</p>
+    <pre style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:15px 16px;font-size:14px"><span class="c-acc">airlock demo</span>     <span class="c-dim"># watch it stop a key-theft, live</span>
+airlock init     <span class="c-dim"># wire it into every agent you run</span>
+airlock doctor   <span class="c-dim"># green checks = you're covered</span></pre>
+  </div>
+
+  <h2>What it actually does</h2>
+  <div class="grid">
+    <div class="card"><h3>Gates the call, not the prose</h3>
+      <p>Refuses by what a call touches — a secret path, a known collector,
+      download-and-execute — never by trying to read intent.</p></div>
+    <div class="card"><h3>Least privilege, derived</h3>
+      <p>Run a week in learn mode, then <code>airlock policy propose</code> writes
+      the narrowest policy that covers what your agents actually did.</p></div>
+    <div class="card"><h3>Tamper-evident audit</h3>
+      <p>Every decision lands in a hash-chained, signable log. <code>airlock
+      verify</code> proves nothing was rewritten.</p></div>
+    <div class="card"><h3>Reversible</h3>
+      <p><code>airlock uninstall</code> restores every file it touched
+      <em>byte-for-byte</em>. Nothing shows up in your git diff.</p></div>
+  </div>
+
+  <h2>Works with your whole fleet</h2>
+  <p class="muted">One command gates the MCP servers of every agent on the box —
+    verified against the installed CLIs:</p>
+  <div class="fleet">
+    <span class="chip"><b>✓</b> Claude Code</span>
+    <span class="chip"><b>✓</b> Cursor</span>
+    <span class="chip"><b>✓</b> Windsurf</span>
+    <span class="chip"><b>✓</b> Cline</span>
+    <span class="chip"><b>✓</b> Claude Desktop</span>
+    <span class="chip"><b>✓</b> Kimi</span>
+    <span class="chip"><b>✓</b> grok</span>
+    <span class="chip"><b>✓</b> mimo</span>
+    <span class="chip"><b>✓</b> DeepSeek Harness</span>
+  </div>
 
   <h2>Honest about its limits</h2>
-  <p>Airlock does not stop prompt injection — nothing does; it gates the
-    <em>action</em> the injection asks for. Egress is argument-level. An agent
+  <p class="muted">Airlock does not stop prompt injection — nothing does; it gates
+    the <em>action</em> the injection asks for. Egress is argument-level. An agent
     with a shell can start a server outside the proxy. These boundaries are
     documented, not hidden.</p>
 
@@ -89,8 +153,17 @@ airlock profile default         <span class="muted"># now guard</span></code></p
     <a href="https://github.com/airlock-agent/airlock">GitHub</a> ·
     <a href="https://github.com/airlock-agent/airlock/blob/main/SECURITY.md">Security</a> ·
     <a href="https://github.com/airlock-agent/airlock/blob/main/THREATMODEL.md">Threat model</a>
-    <br><span class="muted">This page is a static docs stub for GitHub Pages — wire it up under Settings → Pages.</span>
+    <br><span class="muted">Static docs page for GitHub Pages — Settings → Pages → /docs.</span>
   </footer>
+
 </div>
+<script>
+  const tabs = document.querySelectorAll('.tab');
+  tabs.forEach(t => t.addEventListener('click', () => {
+    tabs.forEach(x => x.setAttribute('aria-selected', x === t ? 'true' : 'false'));
+    document.querySelectorAll('[data-panel]').forEach(p =>
+      p.hidden = p.getAttribute('data-panel') !== t.dataset.os);
+  }));
+</script>
 </body>
 </html>
