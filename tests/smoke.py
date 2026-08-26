@@ -18,8 +18,11 @@ FAILED = []
 
 
 def run(args, env, expect=None):
+    # decode the child's UTF-8 output as UTF-8, not the Windows locale (cp1252),
+    # which cannot decode the glyphs the CLI prints.
     r = subprocess.run([PY, "-m", "airlock.cli", *args], env=env,
-                       capture_output=True, text=True)
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
     if expect is not None and r.returncode != expect:
         FAILED.append(f"airlock {' '.join(args)} -> exit {r.returncode} "
                       f"(expected {expect})\n{r.stdout[-300:]}\n{r.stderr[-300:]}")

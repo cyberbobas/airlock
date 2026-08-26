@@ -154,7 +154,9 @@ def _workspace_boundary(s):
     import importlib
     from airlock import config as _cfg
 
-    home = pathlib.Path(tempfile.mkdtemp(prefix="bd-ws-"))
+    # resolve() so the expected paths match config.workspace(), which resolves
+    # symlinks — on macOS $TMPDIR is /var/folders/… symlinked to /private/var/….
+    home = pathlib.Path(tempfile.mkdtemp(prefix="bd-ws-")).resolve()
     (home / "proj").mkdir()
     (home / "proj" / ".git").mkdir()
     (home / "secrets").mkdir()

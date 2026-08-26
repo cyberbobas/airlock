@@ -188,35 +188,38 @@ def main():
             [r.get("reason", "")[:60] for r in approvals])
 
     # The real daemon, with a human who takes three seconds over the dialog.
-    fake = pathlib.Path(tempfile.mkdtemp())
-    (fake / "zenity").write_text(SLOW_ZENITY)
-    (fake / "zenity").chmod(0o755)
-    home = pathlib.Path(tempfile.mkdtemp(prefix="ac-real-"))
-    home.mkdir(exist_ok=True)
-    denv = dict(os.environ, PYTHONPATH=str(ROOT), AIRLOCK_HOME=str(home),
-                AIRLOCK_QUIET="1", PATH=f"{fake}:{os.environ['PATH']}", DISPLAY=":0",
-                FAKE_ZENITY_DELAY="3", FAKE_ZENITY_RC="0", AIRLOCK_ASK_TIMEOUT="30")
-    d = subprocess.Popen([sys.executable, "-m", "airlock.askd"], env=denv,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:
-        for _ in range(80):
-            if (home / "ask.sock").exists():
-                break
-            time.sleep(0.05)
-        got, _ = _call(srv, home, "enforce", 1)
-        time.sleep(3.5)
-    finally:
-        d.terminate()
-        d.wait()
-    recs = _records(home)
-    s.check("the real daemon's late answer does not let the call through",
-            got == "BLOCK", got)
-    s.check("no approval is recorded for it",
-            not [r for r in recs if r.get("effective") == "allow"],
-            [r.get("reason", "")[:60] for r in recs if r.get("effective") == "allow"])
-    late_notes = [r for r in recs if "too late" in (r.get("reason") or "")]
-    s.check("the answer is recorded, as an answer that decided nothing",
-            len(late_notes) == 1, [r.get("reason", "")[:80] for r in recs])
+    # askd's GUI is zenity, which _via_zenity disables on non-Linux (macOS uses
+    # osascript directly, without a daemon), so this scenario is Linux-only.
+    if sys.platform.startswith("linux"):
+        fake = pathlib.Path(tempfile.mkdtemp())
+        (fake / "zenity").write_text(SLOW_ZENITY)
+        (fake / "zenity").chmod(0o755)
+        home = pathlib.Path(tempfile.mkdtemp(prefix="ac-real-"))
+        home.mkdir(exist_ok=True)
+        denv = dict(os.environ, PYTHONPATH=str(ROOT), AIRLOCK_HOME=str(home),
+                    AIRLOCK_QUIET="1", PATH=f"{fake}:{os.environ['PATH']}", DISPLAY=":0",
+                    FAKE_ZENITY_DELAY="3", FAKE_ZENITY_RC="0", AIRLOCK_ASK_TIMEOUT="30")
+        d = subprocess.Popen([sys.executable, "-m", "airlock.askd"], env=denv,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(80):
+                if (home / "ask.sock").exists():
+                    break
+                time.sleep(0.05)
+            got, _ = _call(srv, home, "enforce", 1)
+            time.sleep(3.5)
+        finally:
+            d.terminate()
+            d.wait()
+        recs = _records(home)
+        s.check("the real daemon's late answer does not let the call through",
+                got == "BLOCK", got)
+        s.check("no approval is recorded for it",
+                not [r for r in recs if r.get("effective") == "allow"],
+                [r.get("reason", "")[:60] for r in recs if r.get("effective") == "allow"])
+        late_notes = [r for r in recs if "too late" in (r.get("reason") or "")]
+        s.check("the answer is recorded, as an answer that decided nothing",
+                len(late_notes) == 1, [r.get("reason", "")[:80] for r in recs])
 
     # --- daemon lifecycle -------------------------------------------------
     home = pathlib.Path(tempfile.mkdtemp(prefix="ac-life-"))
