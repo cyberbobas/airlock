@@ -33,10 +33,8 @@ runs:
 
     - name: Install Airlock
       shell: bash
-      # Installs the pinned copy of Airlock that ships with this action ref.
-      # Once airlock-agent is on PyPI you can replace this with
-      #   pip install "airlock-agent==<version>"
-      run: pip install "${{ github.action_path }}"
+      # From PyPI, so the scan does not depend on the action's checked-out tree.
+      run: pip install airlock-agent
 
     - name: Scan
       shell: bash
