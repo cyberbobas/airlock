@@ -256,6 +256,28 @@ def main():
             "_airlock_original" in
             json.loads((proj4 / ".mcp.json").read_text())["mcpServers"]["ok"])
 
+    # ---- 6e. any agent via AIRLOCK_MCP_CONFIGS (DeepSeek/mimo/etc.) ------
+    # Airlock can't hardcode every agent's config path; a standard mcpServers
+    # file pointed at via AIRLOCK_MCP_CONFIGS must be gated and unwrapped like a
+    # built-in store.
+    h5 = pathlib.Path(tempfile.mkdtemp(prefix="airlock-custom-"))
+    (h5 / ".claude").mkdir()
+    proj5 = h5 / "proj"; proj5.mkdir()
+    custom = h5 / "agent" / "mcp.json"; custom.parent.mkdir()
+    custom.write_text('{"mcpServers":{"srv":{"command":"agent-mcp","args":["run"]}}}')
+    env5 = _env(h5 / ".airlock", proj5)
+    env5["HOME"] = str(h5)
+    env5["CLAUDE_SETTINGS"] = str(h5 / ".claude" / "settings.json")
+    env5["AIRLOCK_MCP_CONFIGS"] = str(custom)
+    _cli(["init", "--profile", "default"], env5)
+    s.check("a custom AIRLOCK_MCP_CONFIGS store gets gated",
+            "_airlock_original" in
+            json.loads(custom.read_text())["mcpServers"]["srv"], custom.read_text())
+    _cli(["uninstall", "-y"], env5)
+    s.check("...and unwrapped byte-for-byte on uninstall",
+            "_airlock_original" not in
+            json.loads(custom.read_text())["mcpServers"]["srv"], custom.read_text())
+
     # ---- 7. the report exists and says something --------------------
     from airlock import audit
     os.environ["AIRLOCK_HOME"] = str(fake / ".airlock")

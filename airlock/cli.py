@@ -30,6 +30,20 @@ def _policy() -> Policy:
     return Policy.resolve()
 
 
+def _merge_mcp_configs(paths) -> None:
+    """Fold `--mcp-config` paths into AIRLOCK_MCP_CONFIGS for this process, so
+    install.mcp_stores() picks them up. Lets init/doctor/uninstall gate an agent
+    Airlock doesn't auto-detect (DeepSeek, mimo, anything with an mcpServers
+    file) without threading a parameter through every layer."""
+    if not paths:
+        return
+    cur = [c for c in os.environ.get("AIRLOCK_MCP_CONFIGS", "").split(os.pathsep) if c]
+    for p in paths:
+        if p not in cur:
+            cur.append(p)
+    os.environ["AIRLOCK_MCP_CONFIGS"] = os.pathsep.join(cur)
+
+
 def _say(rows, title=""):
     if title:
         print(f"\n  {_C['b']}{title}{_C['0']}")
@@ -220,6 +234,7 @@ def cmd_verify(a) -> int:
 
 def cmd_doctor(a) -> int:
     """Tell the operator what is actually enforcing, not what is installed."""
+    _merge_mcp_configs(getattr(a, "mcp_config", None))
     if getattr(a, "fix", False):
         fixres = install.fix(project=config.workspace())
         if fixres.changes:
@@ -364,6 +379,7 @@ def cmd_doctor(a) -> int:
 
 
 def cmd_init(a) -> int:
+    _merge_mcp_configs(getattr(a, "mcp_config", None))
     res = install.init(a.profile, hook=not a.no_hook, mcp=not a.no_mcp,
                        force=a.force)
     print(f"\n  {_C['b']}Airlock installed{_C['0']}  {_C['d']}profile: {a.profile}{_C['0']}")
@@ -401,6 +417,7 @@ def _confirm(prompt: str, *, default_no: bool = True) -> bool:
 
 
 def cmd_uninstall(a) -> int:
+    _merge_mcp_configs(getattr(a, "mcp_config", None))
     if not a.yes:
         print(f"\n  This will unwire the Claude Code hook and unwrap your MCP "
               f"servers.")
@@ -690,12 +707,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-hook", action="store_true", help="skip the Claude Code hook")
     s.add_argument("--no-mcp", action="store_true", help="skip wrapping MCP servers")
     s.add_argument("--force", action="store_true", help="overwrite an existing policy")
+    s.add_argument("--mcp-config", action="append", metavar="PATH",
+                   help="also gate this MCP config file (repeatable; any agent with a standard mcpServers file)")
     s.set_defaults(fn=cmd_init)
 
     s = sub.add_parser("uninstall", help="remove every change Airlock made")
     s.add_argument("--purge", action="store_true",
                    help="also delete $AIRLOCK_HOME (policy, pins, audit log)")
     s.add_argument("-y", "--yes", action="store_true")
+    s.add_argument("--mcp-config", action="append", metavar="PATH",
+                   help="also gate this MCP config file (repeatable; any agent with a standard mcpServers file)")
     s.set_defaults(fn=cmd_uninstall)
 
     s = sub.add_parser("profile", help="show or switch the policy profile")
@@ -767,6 +788,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("doctor", help="what is actually enforcing?")
     s.add_argument("--fix", action="store_true",
                    help="wrap any ungated MCP servers and wire a missing hook")
+    s.add_argument("--mcp-config", action="append", metavar="PATH",
+                   help="also gate this MCP config file (repeatable; any agent with a standard mcpServers file)")
     s.set_defaults(fn=cmd_doctor)
 
     for name, mod in (("mcp", "airlock.mcp_proxy"), ("hook", "airlock.cc_hook"),

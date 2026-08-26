@@ -295,8 +295,26 @@ def remove_hook(res: Result) -> None:
 # Claude Code rewrites on its own, which would race our edit and could strip the
 # `_airlock_original` key uninstall needs to put it back. The hook covers Claude
 # Code; the proxy covers the agents that have no hook.
+def _custom_stores() -> list[tuple[str, Path]]:
+    """User-declared MCP configs from AIRLOCK_MCP_CONFIGS (os.pathsep-separated).
+
+    The escape hatch for any agent Airlock does not auto-detect — point it at the
+    config file and, if that file is a standard `mcpServers` JSON, it gets gated
+    (and later unwrapped) exactly like a built-in store.
+    """
+    raw = os.environ.get("AIRLOCK_MCP_CONFIGS", "")
+    return [("custom", Path(c.strip()).expanduser())
+            for c in raw.split(os.pathsep) if c.strip()]
+
+
 def mcp_stores(project: Path) -> list[tuple[str, Path]]:
-    """(label, path) for every known MCP config that exists on this box."""
+    """(label, path) for every known MCP config that exists on this box.
+
+    A store is auto-gated only if the file both EXISTS and holds a standard
+    `mcpServers` object (checked later by _server_maps). That guard is what makes
+    the best-effort entries for newer agents safe: a wrong path is a no-op, and a
+    config with a different shape wraps nothing rather than being corrupted.
+    """
     home = Path.home()
     cands = [
         ("Claude Code (project)", project / ".mcp.json"),
@@ -319,8 +337,24 @@ def mcp_stores(project: Path) -> list[tuple[str, Path]]:
                                    / "claude_desktop_config.json"),
         ("Claude Desktop",        home / ".config" / "Claude"
                                   / "claude_desktop_config.json"),
+        # Best-effort auto-detect for newer agents (DeepSeek Harness, mimo cli).
+        # These paths are conventional, not confirmed for every version — the
+        # exists+schema guard above keeps a wrong guess harmless. If an agent
+        # puts its config elsewhere or uses a non-standard shape, point Airlock
+        # at it with AIRLOCK_MCP_CONFIGS / `airlock init --mcp-config`.
+        ("DeepSeek (project)",    project / ".deepseek" / "mcp.json"),
+        ("DeepSeek",              home / ".deepseek" / "mcp.json"),
+        ("DeepSeek",              home / ".config" / "deepseek" / "mcp.json"),
+        ("mimo (project)",        project / ".mimo" / "mcp.json"),
+        ("mimo",                  home / ".mimo" / "mcp.json"),
+        ("mimo",                  home / ".config" / "mimo" / "mcp.json"),
     ]
-    return [(label, p) for label, p in cands if p.exists()]
+    stores, seen = [], set()
+    for label, p in cands + _custom_stores():
+        if p.exists() and p not in seen:
+            seen.add(p)
+            stores.append((label, p))
+    return stores
 
 
 def mcp_config_paths(project: Path) -> list[Path]:

@@ -190,12 +190,22 @@ would rather say that than have you find out during a rollout.
 
 `airlock init` finds the MCP servers each agent actually runs — not just a
 project `.mcp.json`, but the Cursor project/home configs, Windsurf, Cline
-and Claude Desktop. It deliberately leaves Claude Code's live
+and Claude Desktop, plus best-effort auto-detect for newer agents (DeepSeek
+Harness, mimo cli). It deliberately leaves Claude Code's live
 `~/.claude.json` alone: those MCP calls already go through the PreToolUse hook
 (same policy, holds and contracts), so wrapping them would only double-gate a
 file Claude Code rewrites out from under us. `airlock doctor` lists any server
 still ungated, named by store, and `airlock doctor --fix` wraps the stragglers
 (and wires the hook if it is missing) in one command:
+
+**Any agent, even one Airlock doesn't know.** Point it at any config that is a
+standard `mcpServers` file and it gets gated (and cleanly unwrapped) like a
+built-in store — no code change needed:
+
+```bash
+airlock init --mcp-config ~/.some-agent/mcp.json   # one-off, repeatable
+export AIRLOCK_MCP_CONFIGS=~/.some-agent/mcp.json   # durable across init/doctor/uninstall
+```
 
 ```bash
 airlock doctor        # ! MCP servers not behind Airlock: notion [Cursor], … 
@@ -480,6 +490,8 @@ file.
 * `AIRLOCK_SIGN=hmac|ed25519` · `AIRLOCK_SIGN_KEY` · `AIRLOCK_VERIFY_KEY`
 * `AIRLOCK_AUDIT_FSYNC=critical|always|never` · `AIRLOCK_AUDIT_MAX_MB=64`
 * `AIRLOCK_MAX_ARG_VALUES=4096` · `AIRLOCK_MAX_ARG_CHARS=1000000` · `AIRLOCK_MAX_ARG_DEPTH=12`
+* `AIRLOCK_MCP_CONFIGS` — os.pathsep-separated MCP config files to gate, for any
+  agent Airlock does not auto-detect (also `airlock init --mcp-config PATH`).
 * `AIRLOCK_FEED_URL` · `AIRLOCK_FEED_KEY`
 * `AIRLOCK_QUIET=1` — log only, no live stderr line.
 
