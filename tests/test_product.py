@@ -278,6 +278,42 @@ def main():
             "_airlock_original" not in
             json.loads(custom.read_text())["mcpServers"]["srv"], custom.read_text())
 
+    # ---- 6f. grok (TOML) and mimo (JSON `mcp`, command-as-list) ---------
+    h6 = pathlib.Path(tempfile.mkdtemp(prefix="airlock-fmt-"))
+    (h6 / ".claude").mkdir(); proj6 = h6 / "proj"; proj6.mkdir()
+    (h6 / ".grok").mkdir(); (h6 / ".config" / "mimocode").mkdir(parents=True)
+    grok_toml = ("# grok config\n[ui]\nscreen_mode = \"minimal\"  # keep\n\n"
+                 "[mcp_servers.notion]\ncommand = \"npx\"\nargs = [\"-y\", \"notion-mcp\"]\n"
+                 "enabled = true\n\n[terminal]\nalt_screen = true\n")
+    (h6 / ".grok" / "config.toml").write_text(grok_toml)
+    (h6 / ".config" / "mimocode" / "mimocode.json").write_text(json.dumps({
+        "$schema": "x", "mcp": {
+            "local1": {"type": "local", "command": ["mimo-mcp", "run"]},
+            "rem": {"type": "remote", "url": "https://x"}}}))
+    env6 = _env(h6 / ".airlock", proj6)
+    env6["HOME"] = str(h6)
+    env6["CLAUDE_SETTINGS"] = str(h6 / ".claude" / "settings.json")
+    _cli(["init", "--profile", "default"], env6)
+    gtoml = (h6 / ".grok" / "config.toml").read_text()
+    s.check("grok TOML server gets wrapped",
+            "_airlock_original" in gtoml and "airlock.mcp_proxy" in gtoml, gtoml[:200])
+    s.check("grok's unrelated TOML sections are preserved",
+            "[ui]" in gtoml and "keep" in gtoml and "[terminal]" in gtoml, gtoml)
+    mj = json.loads((h6 / ".config" / "mimocode" / "mimocode.json").read_text())["mcp"]
+    s.check("mimo command-as-list server gets wrapped",
+            "_airlock_original" in mj["local1"]
+            and mj["local1"]["command"][0].endswith(("python3", "airlock-mcp", "python")),
+            mj["local1"])
+    s.check("mimo remote (no command) is left untouched",
+            "_airlock_original" not in mj["rem"], mj["rem"])
+    _cli(["uninstall", "-y"], env6)
+    s.check("grok TOML restored byte-for-byte",
+            (h6 / ".grok" / "config.toml").read_text() == grok_toml,
+            (h6 / ".grok" / "config.toml").read_text())
+    s.check("mimo restored (command back to a plain list)",
+            json.loads((h6 / ".config" / "mimocode" / "mimocode.json").read_text())
+            ["mcp"]["local1"]["command"] == ["mimo-mcp", "run"])
+
     # ---- 7. the report exists and says something --------------------
     from airlock import audit
     os.environ["AIRLOCK_HOME"] = str(fake / ".airlock")

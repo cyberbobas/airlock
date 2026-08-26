@@ -341,18 +341,11 @@ def cmd_doctor(a) -> int:
     stores = install.mcp_stores(ws)
     ungated, gated = [], 0
     for label, mp in stores:
-        try:
-            data = json.loads(mp.read_text())
-        except Exception:
-            continue
-        for servers in install._server_maps(data):
-            for name, spec in servers.items():
-                if not isinstance(spec, dict) or not spec.get("command"):
-                    continue
-                if install._is_wrapped(spec):
-                    gated += 1
-                else:
-                    ungated.append(f"{name} [{label}]")
+        for name, wrapped in install.store_server_status(mp):
+            if wrapped:
+                gated += 1
+            else:
+                ungated.append(f"{name} [{label}]")
     if ungated:
         more = f" (+{len(ungated) - 6} more)" if len(ungated) > 6 else ""
         rows.append(("warn", f"MCP servers not behind Airlock: "

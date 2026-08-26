@@ -13,14 +13,21 @@ substring — so uninstall removes exactly its own edits and never someone
 else's tool that merely lives under a path containing the word "airlock".
 """
 from __future__ import annotations
+import base64
 import json
 import os
+import re
 import shlex
 import shutil
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+try:
+    import tomllib                     # 3.11+; read-only, used for grok's config
+except ModuleNotFoundError:            # pragma: no cover
+    tomllib = None
 
 from . import config
 
@@ -337,18 +344,20 @@ def mcp_stores(project: Path) -> list[tuple[str, Path]]:
                                    / "claude_desktop_config.json"),
         ("Claude Desktop",        home / ".config" / "Claude"
                                   / "claude_desktop_config.json"),
-        # Kimi CLI stores its MCP servers in a standard `mcpServers` JSON at
-        # `mcp.json` (confirmed from the binary), user- and project-scoped, so
-        # _server_maps handles it as-is. Guarded by exists+schema like the rest.
+        # Kimi CLI: standard `mcpServers` JSON at mcp.json (confirmed from the
+        # binary), user- and project-scoped.
         ("Kimi CLI",              home / ".kimi-code" / "mcp.json"),
         ("Kimi CLI (project)",    project / ".kimi-code" / "mcp.json"),
-        # NOT auto-detected (verified: their config is not a standard mcpServers
-        # JSON, so wrapping them needs a dedicated handler — tracked in
-        # docs/OWNER-TODO.md):
-        #   * grok  — TOML `[mcp_servers.<name>]` in ~/.grok/config.toml
-        #   * mimo  — JSON under key `mcp`, command-as-list, in mimocode.json
-        # Anything with a standard mcpServers file is covered by
-        # AIRLOCK_MCP_CONFIGS / `airlock init --mcp-config` today.
+        # grok: TOML, [mcp_servers.<name>] in config.toml (handled by _wrap_toml).
+        ("grok",                  home / ".grok" / "config.toml"),
+        ("grok (project)",        project / ".grok" / "config.toml"),
+        # mimo: JSON under the `mcp` key, command-as-list, in mimocode.json
+        # (user, project, and .mimocode/); handled by the JSON path + _wrap_spec.
+        ("mimo",                  home / ".config" / "mimocode" / "mimocode.json"),
+        ("mimo (project)",        project / "mimocode.json"),
+        ("mimo (project)",        project / ".mimocode" / "mimocode.json"),
+        # DeepSeek Harness: not verified (not installed on the test box). Any
+        # standard mcpServers file is covered by AIRLOCK_MCP_CONFIGS today.
     ]
     stores, seen = [], set()
     for label, p in cands + _custom_stores():
@@ -372,7 +381,10 @@ def _server_maps(data: dict) -> list[dict]:
     the edit.
     """
     maps: list[dict] = []
-    for key in ("mcpServers", "mcp_servers"):
+    for key in ("mcpServers", "mcp_servers", "mcp"):
+        # `mcp` is mimo's key. Its value is a dict of server specs; a stray
+        # `mcp` that is not (e.g. a scalar) is ignored here, and any entry that
+        # is not a stdio server is skipped per-spec by the wrap loop.
         m = data.get(key)
         if isinstance(m, dict):
             maps.append(m)
@@ -397,8 +409,236 @@ def _is_wrapped(spec: dict) -> bool:
                             module="airlock.mcp_proxy")
 
 
+def _wrap_spec(name: str, spec: dict) -> bool:
+    """Rewrite one server dict to launch through airlock-mcp. Returns True if it
+    changed. Handles both shapes: command-as-string + separate args (standard,
+    Cursor, Cline, Kimi…) and command-as-list (mimo's `mcp` entries)."""
+    if _is_wrapped(spec):
+        return False
+    cmd = spec.get("command")
+    wrap = mcp_command()
+    if isinstance(cmd, list):
+        if not cmd:
+            return False
+        spec["_airlock_original"] = {"command": list(cmd)}      # no args field
+        spec["command"] = [*wrap, "--server-id", name, "--", *cmd]
+    else:
+        spec["_airlock_original"] = {"command": cmd,
+                                     "args": list(spec.get("args") or [])}
+        inner = [cmd, *(spec.get("args") or [])]
+        spec["command"] = wrap[0]
+        spec["args"] = [*wrap[1:], "--server-id", name, "--", *inner]
+    return True
+
+
+def _unwrap_spec(name: str, spec: dict, res: Result, path: Path) -> bool:
+    orig = spec.pop("_airlock_original", None)
+    if not orig:
+        res.note(f"{path}: '{name}' is wrapped but has no saved original; "
+                 f"left alone — edit it by hand")
+        return False
+    if isinstance(orig.get("command"), list) and "args" not in orig:
+        spec["command"] = orig["command"]                      # mimo list form
+    else:
+        spec["command"] = orig.get("command")
+        spec["args"] = orig.get("args", [])
+        if not spec["args"]:
+            spec.pop("args", None)
+    return True
+
+
+# ---- TOML stores (grok) ------------------------------------------------
+# grok keeps its MCP servers in TOML: `[mcp_servers.<name>]` tables with
+# `command` / `args` / `enabled`, inside a config.toml that also holds unrelated
+# sections. We edit ONLY those tables, line by line, and leave the rest of the
+# file byte-identical — a whole-file TOML re-emit would drop comments and needs a
+# writer the stdlib does not ship. The original command/args are stashed as a
+# base64 JSON scalar so the wrap is fully reversible.
+_TOML_HEADER = re.compile(r'^\s*\[mcp_servers\.(?P<name>"(?:[^"\\]|\\.)*"|[^\]]+)\]\s*(#.*)?$')
+_TOML_ANY_HEADER = re.compile(r'^\s*\[')
+
+
+def _toml_str(s) -> str:
+    out = (str(s).replace("\\", "\\\\").replace('"', '\\"')
+           .replace("\n", "\\n").replace("\t", "\\t").replace("\r", "\\r"))
+    return f'"{out}"'
+
+
+def _toml_arr(items) -> str:
+    return "[" + ", ".join(_toml_str(x) for x in items) + "]"
+
+
+def _toml_edit_table(lines: list[str], start: int, end: int, ncmd: str,
+                     nargs: list, stash: str | None, rm_stash: bool) -> bool:
+    """Rewrite command/args (and add or drop the stash) within one table's line
+    span. Returns False — changing nothing — for a shape we can't edit safely."""
+    seg = lines[start:end]
+    for ln in seg:                                   # bail on a multi-line array
+        st = ln.strip()
+        if re.match(r'^(args|command)\s*=', st):
+            val = st.split("=", 1)[1].strip()
+            if val.startswith("[") and "]" not in val:
+                return False
+
+    def find(pat):
+        for k, ln in enumerate(seg):
+            if re.match(pat, ln):
+                return k
+        return None
+
+    ci = find(r'^\s*command\s*=')
+    if ci is None:
+        return False
+    indent = re.match(r'^(\s*)', seg[ci]).group(1)
+    seg[ci] = f"{indent}command = {_toml_str(ncmd)}\n"
+    argline = f"{indent}args = {_toml_arr(nargs)}\n"
+    ai = find(r'^\s*args\s*=')
+    if ai is not None:
+        seg[ai] = argline
+    else:
+        seg.insert(find(r'^\s*command\s*=') + 1, argline)
+    if rm_stash:
+        si = find(r'^\s*_airlock_original\s*=')
+        if si is not None:
+            del seg[si]
+    elif stash is not None and find(r'^\s*_airlock_original\s*=') is None:
+        seg.insert(find(r'^\s*command\s*=') + 1,
+                   f"{indent}_airlock_original = {_toml_str(stash)}\n")
+    lines[start:end] = seg
+    return True
+
+
+def _wrap_toml(path: Path, res: Result, unwrap: bool, *, label: str = "") -> int:
+    tag = f"{label}: " if label else ""
+    if tomllib is None:
+        return 0
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+    try:
+        data = tomllib.loads(text)
+    except Exception:
+        res.note(f"{tag}{path} is not valid TOML — skipped (fix or remove it)")
+        return 0
+    servers = data.get("mcp_servers")
+    if not isinstance(servers, dict) or not servers:
+        return 0
+
+    lines = text.splitlines(keepends=True)
+    spans = []                                        # (name, start, end)
+    i = 0
+    while i < len(lines):
+        m = _TOML_HEADER.match(lines[i])
+        if m:
+            raw = m.group("name").strip()
+            try:
+                name = json.loads(raw) if raw.startswith('"') else raw
+            except Exception:
+                name = raw
+            j = i + 1
+            while j < len(lines) and not _TOML_ANY_HEADER.match(lines[j]):
+                j += 1
+            spans.append((name, i, j))
+            i = j
+        else:
+            i += 1
+
+    n = 0
+    for name, start, end in reversed(spans):          # bottom-up: indices stay valid
+        spec = servers.get(name)
+        if not isinstance(spec, dict):
+            continue
+        wrapped = "_airlock_original" in spec
+        if unwrap:
+            if not wrapped:
+                continue
+            try:
+                orig = json.loads(base64.b64decode(spec["_airlock_original"]).decode())
+                ncmd, nargs = orig["command"], orig.get("args") or []
+            except Exception:
+                res.note(f"{tag}{path}: '{name}' has an unreadable saved original; "
+                         f"left alone")
+                continue
+            ok = _toml_edit_table(lines, start, end, ncmd, nargs, None, True)
+        else:
+            if wrapped:
+                continue
+            cmd = spec.get("command")
+            args = spec.get("args") or []
+            if not isinstance(cmd, str) or not cmd \
+                    or not all(isinstance(a, str) for a in args):
+                continue                              # only stdio string commands
+            wrap = mcp_command()
+            ncmd = wrap[0]
+            nargs = [*wrap[1:], "--server-id", name, "--", cmd, *args]
+            stash = base64.b64encode(
+                json.dumps({"command": cmd, "args": list(args)}).encode()).decode()
+            ok = _toml_edit_table(lines, start, end, ncmd, nargs, stash, False)
+        if not ok:
+            res.note(f"{tag}{path}: '{name}' has a shape airlock can't rewrite "
+                     f"safely — left alone (edit it by hand)")
+            continue
+        n += 1
+
+    if n:
+        b = _backup(path)
+        newtext = "".join(lines)
+        restored = False
+        if unwrap:                                    # byte-for-byte if a backup matches
+            try:
+                undata = tomllib.loads(newtext)
+            except Exception:
+                undata = None
+            if undata is not None:
+                for bak in reversed(_backups(path)):
+                    try:
+                        if tomllib.loads(bak.read_text(encoding="utf-8")) == undata:
+                            shutil.copyfile(bak, path)
+                            restored = True
+                            break
+                    except Exception:
+                        continue
+        if not restored:
+            config.write_atomic(path, newtext)
+        verb = "unwrapped" if unwrap else "wrapped"
+        res.add(path, f"{tag}{verb} {n} MCP server{'' if n == 1 else 's'}"
+                     + (" (restored the original file byte-for-byte)"
+                        if restored else ""), b or "")
+    return n
+
+
+def store_server_status(path: Path) -> list[tuple[str, bool]]:
+    """(name, is_wrapped) for every stdio server in a store, JSON or TOML.
+
+    Lets `doctor` report gated/ungated across every format without duplicating
+    the per-format parsing. Tolerant: an unreadable store yields nothing.
+    """
+    out: list[tuple[str, bool]] = []
+    try:
+        if path.suffix == ".toml":
+            if tomllib is None:
+                return out
+            servers = tomllib.loads(path.read_text(encoding="utf-8")).get("mcp_servers")
+            if isinstance(servers, dict):
+                for name, spec in servers.items():
+                    if isinstance(spec, dict) and spec.get("command"):
+                        out.append((name, "_airlock_original" in spec))
+        else:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            for servers in _server_maps(data):
+                for name, spec in servers.items():
+                    if isinstance(spec, dict) and spec.get("command"):
+                        out.append((name, _is_wrapped(spec)))
+    except Exception:
+        pass
+    return out
+
+
 def wrap_servers(path: Path, res: Result, unwrap: bool = False, *,
                  label: str = "") -> int:
+    if path.suffix == ".toml":
+        return _wrap_toml(path, res, unwrap, label=label)
     # A store belongs to some other agent and may be malformed through no fault
     # of the user's. _load_json raises SystemExit on bad JSON (right for our own
     # policy/settings), but here it would abort the whole init/uninstall over one
@@ -421,26 +661,11 @@ def wrap_servers(path: Path, res: Result, unwrap: bool = False, *,
             if unwrap:
                 if not _is_wrapped(spec):
                     continue
-                orig = spec.pop("_airlock_original", None)
-                if not orig:
-                    res.note(f"{path}: '{name}' is wrapped but has no saved "
-                             f"original; left alone — edit it by hand")
-                    continue
-                spec["command"] = orig.get("command")
-                spec["args"] = orig.get("args", [])
-                if not spec["args"]:
-                    spec.pop("args", None)
-                n += 1
+                if _unwrap_spec(name, spec, res, path):
+                    n += 1
             else:
-                if _is_wrapped(spec):
-                    continue
-                spec["_airlock_original"] = {"command": spec["command"],
-                                             "args": list(spec.get("args") or [])}
-                inner = [spec["command"], *(spec.get("args") or [])]
-                wrap = mcp_command()
-                spec["command"] = wrap[0]
-                spec["args"] = [*wrap[1:], "--server-id", name, "--", *inner]
-                n += 1
+                if _wrap_spec(name, spec):
+                    n += 1
     if n:
         tag = f"{label}: " if label else ""
         b = _backup(path)
