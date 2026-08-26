@@ -36,6 +36,9 @@ def _seed_audit():
     audit.record("decision", source="mcp", server="fetch", tool="mcp__fetch__get",
                  decision="allow", effective="allow", reason="ok",
                  resource="https://api.github.com/repos/o/r")
+    # the shape the gate ACTUALLY records for a net call: a bare host, no scheme
+    audit.record("decision", source="hook", tool="WebSearch", decision="allow",
+                 effective="allow", reason="ok", resource="docs.python.org")
     audit.record("decision", source="hook", tool="Bash", decision="allow",
                  effective="allow", reason="ok", resource="npm test")
     # must NOT be proposed: a hard block, and a high-flagged allow
@@ -62,6 +65,8 @@ def main():
             ("Read", "/home/user/proj/docs/*") in grants, sorted(grants))
     s.check("proposes an egress host grant",
             ("mcp__fetch__get", "*api.github.com*") in grants, sorted(grants))
+    s.check("proposes a grant from a bare host (what the gate really records)",
+            ("WebSearch", "*docs.python.org*") in grants, sorted(grants))
     s.check("proposes a shell tool (match=None) for review",
             ("Bash", None) in grants, sorted(grants))
 
@@ -136,6 +141,47 @@ def main():
     s.check("monitor over an empty log renders without error",
             monitor.run(once=True, out=buf2) == 0 and "AIRLOCK MONITOR" in buf2.getvalue(),
             buf2.getvalue()[:80])
+
+    # rotation renames the live file: records appended just before the rename
+    # must still reach the counters (a path-offset tail loses them), and the
+    # renamed file's already-counted records must not be counted twice
+    import json as _json
+    from collections import Counter, deque
+    from airlock.monitor import _Tail
+    _fresh_home()
+    live = config.home() / "audit.jsonl"
+    def _rec(i):
+        return _json.dumps({"event": "decision", "source": "hook", "tool": "Read",
+                            "decision": "allow", "effective": "allow", "reason": "ok",
+                            "resource": f"/w/f{i}.txt", "h": f"dig{i:04d}"}) + "\n"
+    live.write_text(_rec(1))
+    t = _Tail(live)
+    c, dq = Counter(), deque()
+    t.ingest(c, dq)
+    with open(live, "a", encoding="utf-8") as f:
+        f.write(_rec(2))                       # lands before the rotation
+    os.replace(live, live.with_name("audit-rotated.jsonl"))
+    live.write_text(_rec(3))                   # the new live segment
+    t.ingest(c, dq)
+    s.check("monitor survives rotation without losing records",
+            c["allow"] == 3, (dict(c), len(dq)))
+    # a second rotation inside the same interval: the middle segment must not
+    # vanish from the counters either
+    with open(live, "a", encoding="utf-8") as f:
+        f.write(_rec(4))
+    os.replace(live, live.with_name("audit-rotated2.jsonl"))
+    live.write_text(_rec(5))
+    t.ingest(c, dq)
+    s.check("two rotations in one interval lose nothing and count nothing twice",
+            c["allow"] == 5, (dict(c), len(dq)))
+    # truncation in place: the offset restarts, and a record that reappears is
+    # deduplicated rather than counted again
+    live.write_text("")
+    t.ingest(c, dq)
+    live.write_text(_rec(5))                   # the same record comes back
+    t.ingest(c, dq)
+    s.check("a truncated live file re-reads without double-counting",
+            c["allow"] == 5, (dict(c), len(dq)))
 
     # ---- demo ------------------------------------------------------------
     # The pip-installed first impression: it must run self-contained (bundled

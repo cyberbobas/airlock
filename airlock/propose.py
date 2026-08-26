@@ -14,12 +14,20 @@ proposed grant can no more lift them than a hand-written one can.
 from __future__ import annotations
 import json
 import os
+import re
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
 from . import audit, contracts, grants as grantmod
 from .policy import normalize
+
+# What is left after the scheme-URL and path checks: letters, digits, dots,
+# dashes and nothing else. The audit stores a net call's host WITHOUT a scheme
+# ("api.github.com"), so _url_host — which needs one — never fires on real
+# records; this is the shape that catches them without mistaking a JSON blob
+# or a shell fragment for a host.
+_BARE_HOST = re.compile(r"^[a-z0-9.-]+$")
 
 
 @dataclass
@@ -56,6 +64,10 @@ def _bucket(tool: str, resource: str) -> tuple[str, str] | None:
         return ("fs", os.path.normpath(os.path.expanduser(normalize(res))))
     if base in contracts._SHELL_TOOLS:
         return ("shell", res)
+    # A shell tool's resource is always its command, so only a non-shell tool
+    # can reach here with a bare host — which is what the gate actually records.
+    if "." in res and len(res) <= 253 and _BARE_HOST.match(res.lower()):
+        return ("net", res.lower())
     return None
 
 
