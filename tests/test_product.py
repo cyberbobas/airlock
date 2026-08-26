@@ -296,7 +296,7 @@ def main():
     _cli(["init", "--profile", "default"], env6)
     gtoml = (h6 / ".grok" / "config.toml").read_text()
     s.check("grok TOML server gets wrapped",
-            "_airlock_original" in gtoml and "airlock.mcp_proxy" in gtoml, gtoml[:200])
+            "_airlock_original" in gtoml and "--server-id" in gtoml, gtoml[:200])
     s.check("grok's unrelated TOML sections are preserved",
             "[ui]" in gtoml and "keep" in gtoml and "[terminal]" in gtoml, gtoml)
     mj = json.loads((h6 / ".config" / "mimocode" / "mimocode.json").read_text())["mcp"]
@@ -338,7 +338,7 @@ def main():
     srv = _dsh_servers()
     s.check("DeepSeek Harness stdio server gets wrapped",
             "_airlock_original" in srv["notion"]
-            and "airlock.mcp_proxy" in srv["notion"]["args"], srv["notion"])
+            and "--server-id" in srv["notion"]["args"], srv["notion"])
     s.check("DeepSeek Harness streamable-http server is left alone",
             "_airlock_original" not in srv["rem"], srv["rem"])
     _cli(["uninstall", "-y"], env7)

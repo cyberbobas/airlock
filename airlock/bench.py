@@ -12,7 +12,10 @@ person notices.
 from __future__ import annotations
 import json
 import os
-import resource
+try:
+    import resource                  # POSIX-only; absent on Windows
+except ModuleNotFoundError:          # pragma: no cover
+    resource = None
 import statistics
 import subprocess
 import sys
@@ -124,6 +127,8 @@ def proxy_overhead(n: int = 300) -> dict:
 
 
 def memory() -> dict:
+    if resource is None:             # Windows: no getrusage
+        return {"rss_mb": None}
     ru = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     # Linux reports KiB, macOS reports bytes
     mb = ru / 1024 if sys.platform != "darwin" else ru / (1024 * 1024)
