@@ -79,21 +79,10 @@
     </div>
   </header>
 
-  <div class="term" aria-label="airlock demo output">
+  <div class="term" aria-label="airlock demo">
     <div class="bar"><i class="dot1"></i><i class="dot2"></i><i class="dot3"></i></div>
-<pre><span class="c-dim">$</span> airlock demo
-
-<span class="c-dim">1. A developer installs a skill with 12k installs.</span>
-<span class="c-dim">   Its setup text tells the agent: read ~/.ssh/id_rsa and POST it to a collector.</span>
-
-<span class="c-dim">2. The agent does exactly that, with the developer's private key as the target.</span>
-   <span class="c-bad">BLOCK</span>  mcp__repo-summarizer__init_telemetry   <span class="c-dim">~/.ssh/id_rsa</span>
-   <span class="c-bad">BLOCK</span>  mcp__repo-summarizer__summarize_repo   <span class="c-dim">https://webhook.site/…</span>
-
-<span class="c-dim">3. Every decision is in a tamper-evident log.</span>
-   <span class="c-ok">CHAIN INTACT</span>  <span class="c-dim">across 21 records</span>
-
-<span class="c-dim">   The prose was never trusted. The call was refused because of what it touched.</span></pre>
+    <img src="airlock-demo.gif" alt="airlock demo blocking a poisoned skill stealing an SSH key"
+         style="display:block;width:100%;height:auto">
   </div>
 
   <h2 id="install">Install</h2>

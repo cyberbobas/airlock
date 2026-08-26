@@ -1,11 +1,18 @@
 # Airlock, a runtime firewall for AI coding agents
 
+[![PyPI](https://img.shields.io/pypi/v/airlock-agent?color=8b7cf6)](https://pypi.org/project/airlock-agent/)
+[![tests](https://github.com/cyberbobas/airlock/actions/workflows/tests.yml/badge.svg)](https://github.com/cyberbobas/airlock/actions/workflows/tests.yml)
+[![Python](https://img.shields.io/pypi/pyversions/airlock-agent)](https://pypi.org/project/airlock-agent/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 Gate every tool call, MCP call and skill your agent runs against a
 least-privilege policy. Static scanners check a skill once, before install.
 Airlock sits in the call path and decides **this call, right now**. That is
 where a skill that reads clean and behaves badly actually gets stopped.
 
 Part of [Agentoffense](https://agentoffense.com/solutions/airlock_ai/).
+
+![Airlock blocks a poisoned skill stealing an SSH key](docs/airlock-demo.gif)
 
 ```
  agent ──native tools──▶ [PreToolUse hook] ─┐
