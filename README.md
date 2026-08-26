@@ -30,7 +30,7 @@ irm https://raw.githubusercontent.com/cyberbobas/airlock/main/install.ps1 | iex
 
 ```bash
 pipx install airlock-agent      # or: uv tool install airlock-agent / pip install airlock-agent
-brew install airlock            # macOS (tap, coming with launch)
+brew tap cyberbobas/tap && brew install airlock   # macOS
 ```
 
 Then:
