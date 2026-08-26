@@ -84,6 +84,7 @@ def _record_outcome(payload: dict) -> int:
 
 
 def main() -> int:
+    from . import config as _cfg; _cfg.force_utf8()
     raw = sys.stdin.read()
     try:
         payload = json.loads(raw) if raw.strip() else {}

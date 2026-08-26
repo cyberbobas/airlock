@@ -10,7 +10,22 @@ Three resolution jobs, all of which the first prototype got wrong by hardcoding:
 from __future__ import annotations
 import os
 import re
+import sys
 from pathlib import Path
+
+
+def force_utf8() -> None:
+    """Make stdout/stderr encode UTF-8 so the CLI does not crash on a Windows
+    console (cp1252), which cannot encode the ✓ / ↳ / block-bar glyphs the output
+    uses. Called from every entry point. No-op where the stream is already UTF-8.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            enc = (getattr(stream, "encoding", "") or "").lower()
+            if enc not in ("utf-8", "utf8") and hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 PKG = Path(__file__).resolve().parent
 PROFILES = PKG / "profiles"

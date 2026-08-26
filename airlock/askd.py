@@ -72,6 +72,7 @@ def _handle(conn: socket.socket, auto: str | None):
 
 
 def main(argv=None) -> int:
+    from . import config as _cfg; _cfg.force_utf8()
     argv = list(sys.argv[1:] if argv is None else argv)
     auto = None
     if "--auto" in argv:

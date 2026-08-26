@@ -444,6 +444,7 @@ class Proxy:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from . import config as _cfg; _cfg.force_utf8()
     argv = list(sys.argv[1:] if argv is None else argv)
     server_id = "server"
     if argv and argv[0] == "--server-id":

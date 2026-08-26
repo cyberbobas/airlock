@@ -814,6 +814,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    config.force_utf8()
     # `airlock hook --post` and `airlock mcp -- server args` hand options
     # through to the module they run. argparse rejects an unknown option
     # before REMAINDER ever sees it, so the passthrough commands are split off
