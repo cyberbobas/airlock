@@ -190,8 +190,9 @@ would rather say that than have you find out during a rollout.
 
 `airlock init` finds the MCP servers each agent actually runs — not just a
 project `.mcp.json`, but Cursor, Windsurf, Cline, Claude Desktop and Kimi CLI
-(standard `mcpServers` JSON), **grok** (its `[mcp_servers]` TOML) and **mimo**
-(its `mcp` JSON) — the last two verified against the installed CLIs, which read
+(standard `mcpServers` JSON), **grok** (its `[mcp_servers]` TOML), **mimo** (its
+`mcp` JSON) and **DeepSeek Harness** (its `dsh-mcp-client` entries in cordis
+profile YAML) — the last three verified against the installed CLIs, which read
 the wrapped config and launch each server through the gate. It deliberately
 leaves Claude Code's live
 `~/.claude.json` alone: those MCP calls already go through the PreToolUse hook

@@ -314,6 +314,38 @@ def main():
             json.loads((h6 / ".config" / "mimocode" / "mimocode.json").read_text())
             ["mcp"]["local1"]["command"] == ["mimo-mcp", "run"])
 
+    # ---- 6g. DeepSeek Harness (cordis loader-patch YAML) ---------------
+    import yaml as _yaml
+    h7 = pathlib.Path(tempfile.mkdtemp(prefix="airlock-dsh-"))
+    (h7 / ".claude").mkdir(); proj7 = h7 / "proj"; proj7.mkdir()
+    prof = h7 / ".dsh" / "profiles" / "headless"; prof.mkdir(parents=True)
+    patch_yml = ("# dsh patch\n- insert:\n"
+                 "    - id: mcp-notion\n      name: '@deepseek-ai/dsh-mcp-client'\n"
+                 "      config:\n        transport: stdio\n        serverName: notion\n"
+                 "        command: npx\n        args: [\"-y\", \"notion-mcp\"]\n"
+                 "    - id: mcp-rem\n      name: '@deepseek-ai/dsh-mcp-client'\n"
+                 "      config:\n        transport: streamable-http\n"
+                 "        serverName: rem\n        url: https://x\n")
+    (prof / "cordis.patch.yml").write_text(patch_yml)
+    env7 = _env(h7 / ".airlock", proj7)
+    env7["HOME"] = str(h7)
+    env7["CLAUDE_SETTINGS"] = str(h7 / ".claude" / "settings.json")
+    _cli(["init", "--profile", "default"], env7)
+
+    def _dsh_servers():
+        d = _yaml.safe_load((prof / "cordis.patch.yml").read_text())
+        return {n: c for n, c in install._dsh_server_configs(d)}
+    srv = _dsh_servers()
+    s.check("DeepSeek Harness stdio server gets wrapped",
+            "_airlock_original" in srv["notion"]
+            and "airlock.mcp_proxy" in srv["notion"]["args"], srv["notion"])
+    s.check("DeepSeek Harness streamable-http server is left alone",
+            "_airlock_original" not in srv["rem"], srv["rem"])
+    _cli(["uninstall", "-y"], env7)
+    s.check("DeepSeek Harness restored (command back to npx)",
+            _dsh_servers()["notion"]["command"] == "npx"
+            and _dsh_servers()["notion"]["args"] == ["-y", "notion-mcp"])
+
     # ---- 7. the report exists and says something --------------------
     from airlock import audit
     os.environ["AIRLOCK_HOME"] = str(fake / ".airlock")

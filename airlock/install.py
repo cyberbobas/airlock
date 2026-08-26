@@ -356,9 +356,16 @@ def mcp_stores(project: Path) -> list[tuple[str, Path]]:
         ("mimo",                  home / ".config" / "mimocode" / "mimocode.json"),
         ("mimo (project)",        project / "mimocode.json"),
         ("mimo (project)",        project / ".mimocode" / "mimocode.json"),
-        # DeepSeek Harness: not verified (not installed on the test box). Any
-        # standard mcpServers file is covered by AIRLOCK_MCP_CONFIGS today.
+        # DeepSeek Harness: MCP servers are dsh-mcp-client entries in each
+        # profile's cordis.patch.yml under $DSH_HOME (~/.dsh by default), handled
+        # by _wrap_dsh. Added per-profile below.
     ]
+    dsh_home = Path(os.environ.get("DSH_HOME") or (home / ".dsh"))
+    profiles = dsh_home / "profiles"
+    if profiles.is_dir():
+        for prof in sorted(profiles.iterdir()):
+            cands.append((f"DeepSeek Harness ({prof.name})",
+                          prof / "cordis.patch.yml"))
     stores, seen = [], set()
     for label, p in cands + _custom_stores():
         if p.exists() and p not in seen:
@@ -608,6 +615,90 @@ def _wrap_toml(path: Path, res: Result, unwrap: bool, *, label: str = "") -> int
     return n
 
 
+# ---- DeepSeek Harness (cordis loader-patch YAML) -----------------------
+# DSH declares each MCP server as a `@deepseek-ai/dsh-mcp-client` plugin entry
+# inside ~/.dsh/profiles/<name>/cordis.patch.yml — a YAML array of loader-patch
+# entries (plain entries, `insert:` lists, id-targeted overrides). A stdio
+# server's `config` is command-string + args-list, exactly the standard shape,
+# so _wrap_spec/_unwrap_spec handle the `config` dict directly. The file may
+# carry js-yaml `!!js` tags; if safe_load can't read it, we skip it (never guess).
+_DSH_CLIENT = "dsh-mcp-client"
+
+
+def _dsh_server_configs(node) -> list[tuple[str, dict]]:
+    """(serverName, config) for every dsh-mcp-client entry, recursing through
+    `insert:` lists and group configs."""
+    out: list[tuple[str, dict]] = []
+    if isinstance(node, list):
+        for item in node:
+            out += _dsh_server_configs(item)
+    elif isinstance(node, dict):
+        cfg = node.get("config")
+        if str(node.get("name", "")).endswith(_DSH_CLIENT) and isinstance(cfg, dict):
+            out.append((str(cfg.get("serverName") or node.get("id") or "server"), cfg))
+        if isinstance(node.get("insert"), list):
+            out += _dsh_server_configs(node["insert"])
+        if node.get("group") and isinstance(cfg, list):
+            out += _dsh_server_configs(cfg)
+    return out
+
+
+def _wrap_dsh(path: Path, res: Result, unwrap: bool, *, label: str = "") -> int:
+    import yaml
+    tag = f"{label}: " if label else ""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+    try:
+        data = yaml.safe_load(text)
+    except Exception:
+        res.note(f"{tag}{path}: not plain YAML (js-yaml tags?) — skipped")
+        return 0
+    if not isinstance(data, (list, dict)):
+        return 0
+    configs = _dsh_server_configs(data)
+    if not configs:
+        return 0
+    n = 0
+    for name, cfg in configs:
+        if unwrap:
+            if "_airlock_original" in cfg and _unwrap_spec(name, cfg, res, path):
+                n += 1
+        else:
+            if cfg.get("transport", "stdio") == "stdio" and _wrap_spec(name, cfg):
+                n += 1
+    if n:
+        b = _backup(path)
+        newtext = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+        restored = False
+        if unwrap:
+            try:
+                undata = yaml.safe_load(newtext)
+            except Exception:
+                undata = None
+            if undata is not None:
+                for bak in reversed(_backups(path)):
+                    try:
+                        if yaml.safe_load(bak.read_text(encoding="utf-8")) == undata:
+                            shutil.copyfile(bak, path)
+                            restored = True
+                            break
+                    except Exception:
+                        continue
+        if not restored:
+            config.write_atomic(path, newtext)
+        verb = "unwrapped" if unwrap else "wrapped"
+        res.add(path, f"{tag}{verb} {n} MCP server{'' if n == 1 else 's'}"
+                     + (" (restored the original file byte-for-byte)"
+                        if restored else ""), b or "")
+    return n
+
+
+def _is_dsh_store(path: Path) -> bool:
+    return path.name in ("cordis.patch.yml", "cordis.yml")
+
+
 def store_server_status(path: Path) -> list[tuple[str, bool]]:
     """(name, is_wrapped) for every stdio server in a store, JSON or TOML.
 
@@ -616,7 +707,13 @@ def store_server_status(path: Path) -> list[tuple[str, bool]]:
     """
     out: list[tuple[str, bool]] = []
     try:
-        if path.suffix == ".toml":
+        if _is_dsh_store(path):
+            import yaml
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            for name, cfg in _dsh_server_configs(data):
+                if cfg.get("transport", "stdio") == "stdio" and cfg.get("command"):
+                    out.append((name, "_airlock_original" in cfg))
+        elif path.suffix == ".toml":
             if tomllib is None:
                 return out
             servers = tomllib.loads(path.read_text(encoding="utf-8")).get("mcp_servers")
@@ -637,6 +734,8 @@ def store_server_status(path: Path) -> list[tuple[str, bool]]:
 
 def wrap_servers(path: Path, res: Result, unwrap: bool = False, *,
                  label: str = "") -> int:
+    if _is_dsh_store(path):
+        return _wrap_dsh(path, res, unwrap, label=label)
     if path.suffix == ".toml":
         return _wrap_toml(path, res, unwrap, label=label)
     # A store belongs to some other agent and may be malformed through no fault
