@@ -337,17 +337,18 @@ def mcp_stores(project: Path) -> list[tuple[str, Path]]:
                                    / "claude_desktop_config.json"),
         ("Claude Desktop",        home / ".config" / "Claude"
                                   / "claude_desktop_config.json"),
-        # Best-effort auto-detect for newer agents (DeepSeek Harness, mimo cli).
-        # These paths are conventional, not confirmed for every version — the
-        # exists+schema guard above keeps a wrong guess harmless. If an agent
-        # puts its config elsewhere or uses a non-standard shape, point Airlock
-        # at it with AIRLOCK_MCP_CONFIGS / `airlock init --mcp-config`.
-        ("DeepSeek (project)",    project / ".deepseek" / "mcp.json"),
-        ("DeepSeek",              home / ".deepseek" / "mcp.json"),
-        ("DeepSeek",              home / ".config" / "deepseek" / "mcp.json"),
-        ("mimo (project)",        project / ".mimo" / "mcp.json"),
-        ("mimo",                  home / ".mimo" / "mcp.json"),
-        ("mimo",                  home / ".config" / "mimo" / "mcp.json"),
+        # Kimi CLI stores its MCP servers in a standard `mcpServers` JSON at
+        # `mcp.json` (confirmed from the binary), user- and project-scoped, so
+        # _server_maps handles it as-is. Guarded by exists+schema like the rest.
+        ("Kimi CLI",              home / ".kimi-code" / "mcp.json"),
+        ("Kimi CLI (project)",    project / ".kimi-code" / "mcp.json"),
+        # NOT auto-detected (verified: their config is not a standard mcpServers
+        # JSON, so wrapping them needs a dedicated handler — tracked in
+        # docs/OWNER-TODO.md):
+        #   * grok  — TOML `[mcp_servers.<name>]` in ~/.grok/config.toml
+        #   * mimo  — JSON under key `mcp`, command-as-list, in mimocode.json
+        # Anything with a standard mcpServers file is covered by
+        # AIRLOCK_MCP_CONFIGS / `airlock init --mcp-config` today.
     ]
     stores, seen = [], set()
     for label, p in cands + _custom_stores():

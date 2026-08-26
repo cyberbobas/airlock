@@ -189,9 +189,9 @@ way. Only Claude Code's own built-in tools currently get the second gate. We
 would rather say that than have you find out during a rollout.
 
 `airlock init` finds the MCP servers each agent actually runs — not just a
-project `.mcp.json`, but the Cursor project/home configs, Windsurf, Cline
-and Claude Desktop, plus best-effort auto-detect for newer agents (DeepSeek
-Harness, mimo cli). It deliberately leaves Claude Code's live
+project `.mcp.json`, but the Cursor project/home configs, Windsurf, Cline,
+Claude Desktop and Kimi CLI (all standard `mcpServers` JSON). It deliberately
+leaves Claude Code's live
 `~/.claude.json` alone: those MCP calls already go through the PreToolUse hook
 (same policy, holds and contracts), so wrapping them would only double-gate a
 file Claude Code rewrites out from under us. `airlock doctor` lists any server
