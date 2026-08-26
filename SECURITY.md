@@ -15,7 +15,7 @@ version before reporting.
 **Report privately through GitHub Security Advisories — do not open a public
 issue for a security bug.**
 
-1. Go to <https://github.com/airlock-agent/airlock/security/advisories>.
+1. Go to <https://github.com/cyberbobas/airlock/security/advisories>.
 2. Click **Report a vulnerability**.
 3. Describe the issue with enough detail to reproduce it: version, OS, Python
    version, policy/profile in use, and a minimal set of steps or a proof of

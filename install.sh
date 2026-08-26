@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # Airlock installer — one command, Linux & macOS.
-#   curl -fsSL https://raw.githubusercontent.com/airlock-agent/airlock/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/cyberbobas/airlock/main/install.sh | sh
 #
 # Installs the `airlock` CLI, then tells you the one command that proves it works.
 set -eu

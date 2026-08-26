@@ -1,6 +1,6 @@
 # Airlock indicators — the public feed & advisory list
 
-This directory is the seed of the public **`airlock-agent/indicators`** repository
+This directory is the seed of the public **`cyberbobas/indicators`** repository
 that `airlock update` fetches from. Two things live here:
 
 1. **`feed.json`** — the signed indicator feed: collector hosts, injection
@@ -19,7 +19,7 @@ that `airlock update` fetches from. Two things live here:
 # 1. edit feed.json (bump `version`, add patterns / block_hosts)
 # 2. sign it with the private feed key
 AIRLOCK_FEED_KEY=<secret> python3 ../tools/sign_feed.py feed.json
-# 3. commit + push to airlock-agent/indicators; the raw URL is HOSTED_FEED_URL
+# 3. commit + push to cyberbobas/indicators; the raw URL is HOSTED_FEED_URL
 ```
 
 ## Consuming it (users)
@@ -34,6 +34,6 @@ airlock update --status   # what is active, over the bundled floor
 tool are themselves a supply chain; fetching them unauthenticated would be the
 exact failure this project exists to prevent.
 
-> Status: not yet hosted. Until `airlock-agent/indicators` is published, point
+> Status: not yet hosted. Until `cyberbobas/indicators` is published, point
 > `airlock update` at a local signed `feed.json` (or your own mirror) — the
 > mechanism is complete and tested; only the hosting is pending.

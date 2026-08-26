@@ -18,7 +18,7 @@ is relying on.
 ## Development
 
 ```bash
-git clone https://github.com/airlock-agent/airlock && cd airlock
+git clone https://github.com/cyberbobas/airlock && cd airlock
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[sign]"
 python3 tests/run_all.py        # the whole suite; must be green before a PR

@@ -5,14 +5,14 @@
 #      or:  shasum -a 256 <the archive tarball>
 #   2. refresh the PyYAML resource:  brew update-python-resources Formula/airlock.rb
 #
-# Once airlock-agent/homebrew-tap exists:
-#   brew tap airlock-agent/tap && brew install airlock
+# Once cyberbobas/homebrew-tap exists:
+#   brew tap cyberbobas/tap && brew install airlock
 class Airlock < Formula
   include Language::Python::Virtualenv
 
   desc "Runtime firewall for AI coding agents — gate every tool, MCP and skill call"
-  homepage "https://github.com/airlock-agent/airlock"
-  url "https://github.com/airlock-agent/airlock/archive/refs/tags/v0.4.6.tar.gz"
+  homepage "https://github.com/cyberbobas/airlock"
+  url "https://github.com/cyberbobas/airlock/archive/refs/tags/v0.4.6.tar.gz"
   sha256 "REPLACE_WITH_RELEASE_TARBALL_SHA256"
   license "Apache-2.0"
 

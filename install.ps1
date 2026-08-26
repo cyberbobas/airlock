@@ -1,5 +1,5 @@
 # Airlock installer — one command, Windows (PowerShell).
-#   irm https://raw.githubusercontent.com/airlock-agent/airlock/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/cyberbobas/airlock/main/install.ps1 | iex
 #
 # Installs the `airlock` CLI, then tells you the one command that proves it works.
 $ErrorActionPreference = 'Stop'

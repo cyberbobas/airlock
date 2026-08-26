@@ -31,8 +31,8 @@ dependencies = ["PyYAML>=6.0"]
 sign = ["cryptography>=42"]
 
 [project.urls]
-Homepage = "https://github.com/airlock-agent/airlock"
-Issues = "https://github.com/airlock-agent/airlock/issues"
+Homepage = "https://github.com/cyberbobas/airlock"
+Issues = "https://github.com/cyberbobas/airlock/issues"
 
 [project.scripts]
 airlock = "airlock.cli:main"

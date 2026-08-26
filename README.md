@@ -19,11 +19,11 @@ where a skill that reads clean and behaves badly actually gets stopped.
 
 ```bash
 # Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/airlock-agent/airlock/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/cyberbobas/airlock/main/install.sh | sh
 ```
 ```powershell
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/airlock-agent/airlock/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/cyberbobas/airlock/main/install.ps1 | iex
 ```
 
 **Or with your own package manager:**
@@ -311,7 +311,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: airlock-agent/airlock@v1
+      - uses: cyberbobas/airlock@v1
         with:
           paths: ".claude .mcp.json .cursor AGENTS.md"
           fail-on-findings: true

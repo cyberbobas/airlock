@@ -27,5 +27,5 @@ indicators:
       regex: "webhook\\.site|requestbin\\.(com|net)"
       why: "known exfiltration collector host"
 references:
-  - "https://github.com/airlock-agent/airlock (demo.sh reproduces this class)"
+  - "https://github.com/cyberbobas/airlock (demo.sh reproduces this class)"
 credit: "Airlock research"
