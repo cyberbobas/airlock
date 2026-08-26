@@ -58,7 +58,7 @@ from . import config
 # Where a hosted feed will live once the indicators repo is published. Until
 # then FEED_PUBLISHED is False, so a bare `airlock update` says so instead of
 # firing an HTTP request at a repo that 404s. Flip this to True the day the
-# indicators repo goes live (see docs/OWNER-TODO.md).
+# indicators repo goes live.
 HOSTED_FEED_URL = "https://raw.githubusercontent.com/cyberbobas/indicators/main/feed.json"
 FEED_PUBLISHED = False
 BUNDLED = config.PKG / "data" / "feed.json"
