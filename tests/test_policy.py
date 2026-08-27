@@ -58,6 +58,33 @@ def main():
     s.check("escalation never loosens a block",
             p.apply_flags(blk, [{"id": "x", "severity": "low"}]).action == BLOCK)
 
+    # unattended `ask` resolution: mode default, plus policy/env override so a
+    # headless host (VM/CI) can fail closed instead of guard's fail-open allow.
+    u = Policy.load(ROOT / "tests" / "fixtures" / "policy.yaml")
+    u.mode = "guard";   u.unattended = ""
+    s.check("guard unattended defaults to ALLOW", u.unattended_ask() == ALLOW)
+    u.mode = "enforce"; s.check("enforce unattended -> ask_fallback (block)",
+                                u.unattended_ask() == BLOCK)
+    u.mode = "guard";   u.unattended = "block"
+    s.check("policy unattended:block forces BLOCK even under guard",
+            u.unattended_ask() == BLOCK)
+    u.unattended = ""
+    os.environ["AIRLOCK_UNATTENDED"] = "block"
+    s.check("AIRLOCK_UNATTENDED=block forces BLOCK under guard",
+            u.unattended_ask() == BLOCK)
+    os.environ["AIRLOCK_UNATTENDED"] = "allow"
+    u.mode = "enforce"
+    s.check("AIRLOCK_UNATTENDED=allow overrides even enforce",
+            u.unattended_ask() == ALLOW)
+    del os.environ["AIRLOCK_UNATTENDED"]
+    bad = pathlib.Path(tempfile.mkstemp(suffix=".yaml")[1])
+    bad.write_text("default: ask\nunattended: maybe\nrules: []\n")
+    try:
+        Policy.load(bad); ok = False
+    except Exception:
+        ok = True
+    s.check("malformed unattended value rejected", ok)
+
     # a malformed policy must fail loudly, not half-load
     for bad, why in [("default: maybe\nrules: []\n", "bad default"),
                      ("default: ask\nrules:\n  - {tool: '*', action: nuke}\n", "bad action"),

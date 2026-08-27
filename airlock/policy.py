@@ -92,6 +92,10 @@ class Decision:
 class Policy:
     default: str = ASK
     ask_fallback: str = BLOCK
+    # what an unreachable `ask` becomes regardless of mode: '' = mode default
+    # (guard->allow, enforce->ask_fallback); 'allow'/'block'/'fallback' force it.
+    # Set to 'block' to fail closed on headless hosts (VM/CI) with no human.
+    unattended: str = ""
     rules: list[dict] = field(default_factory=list)
     mode: str = GUARD
     # minimum scan severity that escalates a decision, and to what
@@ -141,6 +145,9 @@ class Policy:
             pol.mode = _strictest_mode(pol.mode, over.mode)
             pol.default = _stricter(pol.default, over.default)
             pol.ask_fallback = _stricter(pol.ask_fallback, over.ask_fallback)
+            _un = {"": 0, ALLOW: 1, "fallback": 2, "ask_fallback": 2, BLOCK: 3}
+            if _un.get(over.unattended, 0) > _un.get(pol.unattended, 0):
+                pol.unattended = over.unattended
             for sev, act in (over.escalate or {}).items():
                 cur = pol.escalate.get(sev)
                 pol.escalate[sev] = act if cur is None else _stricter(cur, act)
@@ -177,6 +184,7 @@ class Policy:
             rules=data.get("rules") or [],
             escalate=data.get("escalate") or {},
             grants=data.get("grants") or [],
+            unattended=str(data.get("unattended") or "").lower(),
             path=p,
             profile=data.get("profile", ""),
             digest=digest,
@@ -209,6 +217,8 @@ class Policy:
                                  f"got {r.get('action')!r}")
         if self.mode not in MODES:
             raise ValueError(f"policy: mode must be one of {MODES}, got {self.mode!r}")
+        if self.unattended not in ("", ALLOW, BLOCK, "fallback", "ask_fallback"):
+            raise ValueError(f"policy: unattended must be allow/block/fallback or empty, got {self.unattended!r}")
         for sev, act in self.escalate.items():
             if sev not in _SEVERITY_RANK or act not in RANK:
                 raise ValueError(f"policy: escalate.{sev}={act!r} is not severity->action")
@@ -348,9 +358,17 @@ class Policy:
     def unattended_ask(self) -> str:
         """What an `ask` becomes when no human can be reached.
 
-        enforce: fail safe (block). guard: fail quiet (allow, loudly logged) —
-        otherwise `guard` would be `enforce` wearing a different hat.
+        Default: enforce fails safe (block), guard fails quiet (allow, loudly
+        logged) — otherwise `guard` would be `enforce` wearing a different hat.
+        Override with `unattended:` in policy or $AIRLOCK_UNATTENDED — set it to
+        `block` to fail closed on a headless host (VM/CI) where guard would
+        otherwise allow every unanswered `ask`.
         """
+        forced = os.environ.get("AIRLOCK_UNATTENDED", self.unattended).lower()
+        if forced in (ALLOW, BLOCK):
+            return forced
+        if forced in ("fallback", "ask_fallback"):
+            return self.ask_fallback
         return ALLOW if self.mode == GUARD else self.ask_fallback
 
     # ---- scan-flag escalation -----------------------------------------

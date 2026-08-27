@@ -139,7 +139,9 @@ airlock doctor   <span class="c-dim"># green checks = you're covered</span></pre
   <h2>Honest about its limits</h2>
   <p class="muted">Airlock does not stop prompt injection. Nothing does. It gates
     the <em>action</em> the injection asks for. Egress is argument level. An agent
-    with a shell can start a server outside the proxy. These boundaries are
+    with a shell can start a server outside the proxy. On a headless host (VM,
+    CI, server) guard lets an unanswered <code>ask</code> through by default; set
+    <code>AIRLOCK_UNATTENDED=block</code> to fail closed. These boundaries are
     documented, not hidden.</p>
 
   <footer>

@@ -327,8 +327,14 @@ def cmd_doctor(a) -> int:
     chan = askmod.describe_channel()
     if chan == "none (ask resolves unattended)":
         lands = pol.unattended_ask() if pol else "block"
-        rows.append(("warn", f"no way to ask you — every `ask` resolves to "
-                             f"{lands.upper()} (run: airlock askd)"))
+        if lands == "block":
+            rows.append(("ok", f"no human channel, but every unanswered `ask` "
+                               f"fails closed to BLOCK (headless-safe)"))
+        else:
+            rows.append(("warn", f"no way to ask you — every `ask` resolves to "
+                                 f"{lands.upper()}; set `unattended: block` (or "
+                                 f"AIRLOCK_UNATTENDED=block) to fail closed on a "
+                                 f"headless host, or run `airlock askd`"))
     else:
         rows.append(("ok", f"ask reaches you via: {chan}"))
     from .ask import _remember_ttl

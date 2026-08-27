@@ -22,6 +22,11 @@ default: ask
 # ALLOWED (and reported) by design — that is what makes guard different from
 # enforce. Under `observe` nothing is refused at all.
 ask_fallback: block
+# unattended: force what an unanswered `ask` becomes regardless of mode.
+# Leave empty for the mode-based behavior above. On a headless host (VM / CI /
+# server) where guard would otherwise ALLOW every unanswered ask, set this to
+# `block` to fail closed. Overridable per-run with $AIRLOCK_UNATTENDED=block.
+unattended:             # '' | allow | block | fallback
 
 escalate:
   high: ask             # a high-severity scan flag is never silently allowed
