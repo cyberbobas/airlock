@@ -60,9 +60,21 @@ def write_atomic(path: Path, text: str) -> None:
     """
     target = Path(os.path.realpath(path)) if path.is_symlink() else Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(target.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, target)
+    # A fixed "<name>.tmp" is not safe under concurrent writers: two `airlock
+    # allow` processes would share one temp, so one can os.replace() the file
+    # the other has just truncated to zero, and a reader sees an empty policy.
+    # A unique temp per write keeps each os.replace() atomic in isolation.
+    import tempfile
+    fd, tmpname = tempfile.mkstemp(dir=str(target.parent),
+                                   prefix=target.name + ".", suffix=".tmp")
+    tmp = Path(tmpname)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 _WORKSPACE: dict = {}

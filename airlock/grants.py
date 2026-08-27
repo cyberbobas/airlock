@@ -164,11 +164,9 @@ def add(pol, grant: dict) -> tuple[Path, str]:
             return path, "that grant is already in your policy"
     grants.append(grant)
     data["grants"] = grants
-    tmp = path.with_suffix(path.suffix + ".tmp")
     header = _leading_comments(path)
-    tmp.write_text(header + yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
-                   encoding="utf-8")
-    os.replace(tmp, path)
+    config.write_atomic(path, header + yaml.safe_dump(data, sort_keys=False,
+                                                      allow_unicode=True))
     return path, "granted"
 
 
