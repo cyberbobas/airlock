@@ -47,7 +47,7 @@ _EGRESS_CMD = re.compile(
     r"Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b"
     r"|\bgit\s+push\b", re.I)
 _NET_TOOL = re.compile(r"fetch|http|web|url|request|upload|post|egress|curl|download", re.I)
-_URL = re.compile(r"https?://([^/\s'\"]+)", re.I)
+_URL = re.compile(r"https?://([^/\\\s'\"?#]+)", re.I)
 _HOSTISH = re.compile(r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\b", re.I)
 
 # egress to the agent's own model API is normal work, but the secret still

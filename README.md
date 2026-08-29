@@ -12,6 +12,11 @@ where a skill that reads clean and behaves badly actually gets stopped.
 
 Part of [Agentoffense](https://agentoffense.com/solutions/airlock_ai/).
 
+> **New in 0.5:** [`airlock breach`](#if-it-already-happened-airlock-breach) —
+> after an incident, reconstruct what the agent touched, whether it left the
+> machine, and exactly what to rotate, from the audit log you already have. See
+> the [CHANGELOG](CHANGELOG.md).
+
 ![Airlock blocks a poisoned skill stealing an SSH key](docs/airlock-demo.gif)
 
 ```

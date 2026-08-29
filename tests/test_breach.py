@@ -236,6 +236,33 @@ def main():
     pre = [k for k in b.kills if k["ts"][11:19] < "14:00:00"]
     s.check("L2: no pre-window event in the kill chain", not pre, pre)
 
+    # ---- extra adversarial edges (found during additional testing) ----------
+    # URL host must not swallow a backslash, query or fragment
+    s.check("url host strips backslash",
+            breach.egress_host({"tool": "Bash", "resource": r"curl https://evil.example\p"}) == "evil.example")
+    s.check("url host strips query/fragment",
+            breach.egress_host({"tool": "WebFetch", "resource": "https://evil.example/a?k=1#f"}) == "evil.example")
+    # window boundary is inclusive at exactly --window, exclusive one second past
+    edge = lambda dt: breach.build(records=[
+        _rec("14:00:00", "Read", "/h/.aws/credentials"),
+        _rec(dt, "WebFetch", "https://new.example/x")], window=900)
+    s.check("egress exactly at 900s correlates (PROBABLE)",
+            _find(edge("14:15:00"), "aws")[0].confidence == "probable")
+    s.check("egress at 901s is out of window (POSSIBLE)",
+            _find(edge("14:15:01"), "aws")[0].confidence == "possible")
+    # egress that precedes the read must never be attributed to it
+    b = breach.build(records=[
+        _rec("14:00:00", "WebFetch", "https://new.example/x"),
+        _rec("14:05:00", "Read", "/h/.aws/credentials")])
+    s.check("egress before the read does not correlate",
+            _find(b, "aws")[0].confidence == "possible")
+    # a metadata SSRF endpoint after a cred read is not dismissed
+    b = breach.build(records=[
+        _rec("14:00:00", "Read", "/h/.aws/credentials"),
+        _rec("14:00:03", "Bash", "curl http://169.254.169.254/latest/meta-data")])
+    s.check("SSRF-metadata egress correlates (>= probable)",
+            _find(b, "aws")[0].confidence in ("probable", "confirmed"))
+
     return s.report()
 
 
