@@ -16,9 +16,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import (__version__, audit, batch, bench as benchmod, config, contracts,
-               export as exportmod, feed, grants, install, monitor as monitormod,
-               pins, propose as proposemod, report as reportmod, scan)
+from . import (__version__, audit, batch, bench as benchmod, breach as breachmod,
+               config, contracts, export as exportmod, feed, grants, install,
+               monitor as monitormod, pins, propose as proposemod,
+               report as reportmod, scan)
 from .policy import RANK, Policy
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -483,6 +484,30 @@ def cmd_monitor(a) -> int:
     return monitormod.run(interval=a.interval, once=a.once)
 
 
+def cmd_breach(a) -> int:
+    """Reconstruct what the agent touched and what to rotate. Read-only.
+
+    Exit codes are made for IR scripts: 0 clean, 1 burns found, 2 the log
+    itself cannot be trusted (chain broken)."""
+    if a.simulate:
+        b = breachmod.simulate()
+    else:
+        b = breachmod.build(since=a.since, until=a.until, session=a.session,
+                            window=a.window)
+    if a.json:
+        print(breachmod.to_json(b))
+    elif a.markdown:
+        text = breachmod.render_markdown(b)
+        if a.report:
+            pathlib.Path(a.report).write_text(text + "\n", encoding="utf-8")
+            print(f"  wrote {a.report}")
+        else:
+            print(text)
+    else:
+        print(breachmod.render(b, color=not a.no_color))
+    return b.exit_code()
+
+
 def cmd_propose(a) -> int:
     """Derive the narrowest policy that still covers what agents already did."""
     prop = proposemod.build(days=a.days, min_count=a.min_count)
@@ -798,6 +823,21 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--once", action="store_true",
                    help="render a single snapshot and exit (no live loop)")
     s.set_defaults(fn=cmd_monitor)
+
+    s = sub.add_parser("breach",
+                       help="reconstruct what was touched and what to rotate")
+    s.add_argument("--since", help="window start: 2026-08-25, '2026-08-25T14:00', or '2d'/'6h'")
+    s.add_argument("--until", help="window end (default: now)")
+    s.add_argument("--session", help="restrict to one agent session id")
+    s.add_argument("--window", type=int, default=breachmod.CORRELATE_WINDOW,
+                   help="seconds a read and a later egress may be apart to correlate")
+    s.add_argument("--simulate", action="store_true",
+                   help="run the engine over a canonical incident (no log needed)")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--markdown", action="store_true")
+    s.add_argument("--report", metavar="FILE", help="write the markdown report to FILE")
+    s.add_argument("--no-color", action="store_true")
+    s.set_defaults(fn=cmd_breach)
 
     s = sub.add_parser("demo", help="watch a key-theft get refused (self-contained)")
     s.add_argument("--no-color", action="store_true")

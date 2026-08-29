@@ -20,6 +20,7 @@ Column *status*: ✅ enforced by the runtime gate · ◐ partial (stated limit) 
 | 10 | Supply-chain pull — skill fetches a malicious npm/pip package | T,E | ④ Supply | static scan + `airlock scan` flags unpinned `npx -y` + sandbox detonation | ◐ scan only |
 | 11 | Context flooding / cost DoS to bury a payload or exhaust budget | D | ① Ingress | ingest size caps + anomaly flag | ○ |
 | 12 | Memory / RAG poisoning — planting instructions in the agent's store | T | ① Ingress | provenance tag on stored context; tainted memory can't authorize actions | ○ |
+| 13 | Post-compromise: what leaked, what to rotate | I,R | ⑤ Identity | `airlock breach` reconstructs secret-read → egress flows from the verified log, graded (confirmed only on payload-digest linkage) with a rotation checklist | ◐ correlation, gate-visible calls only |
 
 ## Attacks on Airlock itself
 

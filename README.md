@@ -475,6 +475,38 @@ HMAC with a local key protects a log once it leaves the machine, not against a
 process running as you. Ed25519 with the private key held elsewhere is the real
 answer; we say so rather than calling the cheap one "signed audit".
 
+## If it already happened: `airlock breach`
+
+Prevention is one half. The question that lands *after* an incident — or after
+a headline about a new tool-poisoning class — is **what did the agent already
+touch, did any of it leave the machine, and which exact credentials do I rotate
+this minute?** `airlock breach` reconstructs that from the audit log you already
+have. It is read-only, like `verify` — forensics must not write to the scene.
+
+```bash
+airlock breach --simulate          # see it on a canonical incident, no log needed
+airlock breach --since 2d          # the last two days
+airlock breach --session 9f3a…     # one agent session
+airlock breach --markdown > ir.md  # a report for a manager or an insurer
+```
+
+It opens with an integrity banner (`verify` across every segment), so the report
+proves the log it reasoned over was not edited or truncated — reconstruction
+*plus* proven source integrity, which a transcript scraper cannot offer. Then a
+kill-chain timeline, a **rotate** list, and a checklist.
+
+It grades evidence instead of shouting verdicts. `CONFIRMED` is reserved for the
+one signal that is not a guess — the secret's own payload digest reappearing in
+the outbound call. A hit on a known exfil collector proves exfiltration
+*happened* but not that it carried *this* secret, so it is `PROBABLE`; a read
+with no correlated egress is `POSSIBLE`. A clean window says so in one line and
+rotates nothing. Exit codes suit an IR script: `0` clean, `1` burns found, `2`
+the log itself cannot be trusted.
+
+Coverage is stated every time: it sees what the gate saw. Native tools of
+non-hooked agents, MCP started outside the proxy and direct process sockets are
+not covered, and the report says a missing event is not proof one did not occur.
+
 ## Per-project policy
 
 A repository may ship `.airlock/policy.yaml` (or `.airlock.yaml`), found by
@@ -506,7 +538,7 @@ file.
 | `init` · `uninstall` · `profile` · `policy propose` · `doctor` | setup |
 | `allow` · `check` · `log` · `monitor` · `report` | daily |
 | `scan` · `pins` · `contracts` · `update` | admission |
-| `verify` · `export` | evidence |
+| `verify` · `export` · `breach` | evidence |
 | `bench` · `demo` | overhead / try it |
 | `mcp` · `hook` · `askd` | runtime |
 

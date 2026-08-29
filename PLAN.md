@@ -120,22 +120,40 @@ two gates agree; scanner-classification regressions in `tests/test_boundary.py`.
 
 ## Now — what to build next
 
-| priority | item | why |
+The next work is **not** full plane-① taint and **not** a second scanner.
+Those are either a research program or an occupied category. The holes we
+can fail-close, that nobody else fail-closes on a developer laptop, are
+documented with demos, limits and phasing in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+Short version (unique first, coverage as a dependency):
+
+| tag | unique work | why it is empty |
 |---|---|---|
-| 1 | **Plane ① taint** — mark tool output / fetched content as untrusted, gate privileged actions whose context is tainted | the row-1/7/12 defense and the only real answer to injection |
-| 2 | **Native-tool gates beyond Claude Code** — Cursor, Windsurf, Cline | the coverage table's honest gap; a mixed fleet is the normal case |
-| 3 | **HTTP/SSE MCP proxy** | stdio is not where hosted MCP is going |
-| 4 | **Run the feed** — publish indicators on a real endpoint with a signing key | the subscription only exists if the feed does |
-| 5 | **Semantic review (stage 2)** | declared-vs-actual, the first paid-tier feature |
+| 0.5 | **U1 sampling/elicitation/roots deny** + **U6 prompts/notifications gated** | server-initiated MCP requests currently *pass*; Unit 42 sampling attacks have no local deny |
+| 0.6 | **U2 consent integrity (LITL)** + **U3 census** + **U4 subagent principal** | humans approve the agent's story; hidden instruction files have no inventory+hold |
+| 0.7 | **U5 egress-publish** + **U9 taint-lite** + **U8 `airlock breach`** | git/gist/issue are not "URLs"; IR from a hash-chain does not exist as a CLI |
+| 0.8 | **U7 inbound fence** + **U10 shadow-MCP + Landlock child** | always-on agents die on ingress; the documented bypass is "start MCP outside the proxy" |
 
-## Explicit cut-line (NOT in the MVP)
+Coverage of real MCP stores, `doctor --fix`, and an honest indicator feed
+are required so the unique commands are not lying. HTTP/SSE MCP is 0.8,
+after sampling is denied on stdio. Semantic review, fleet/SSO, full taint,
+canaries, drift and a general sandbox product stay on the cut-line.
 
-Semantic LLM reviewer · sandbox detonation · fleet policy / SSO / cloud audit ·
-reputation graph · planes ①③ beyond argument-level checks. These are the
-paid/enterprise roadmap, deliberately out of scope for the OSS wedge.
+## Explicit cut-line (NOT the OSS wedge)
 
-## Success = one screenshot
+Semantic LLM reviewer · sandbox-as-product (Claude/Codex/nono already ship)
+· fleet policy / SSO / cloud audit · reputation graph · token-level taint ·
+canary tokens · behavioral drift · session cost dashboards. Occupied or
+enterprise. Named in `docs/ROADMAP.md`.
 
-The launch does not need feature breadth. It needs one honest frame where
-Airlock catches a real credential-exfil attempt from a popular-looking skill.
-`./demo.sh` is that frame; record it.
+## Success = one screenshot, then three more
+
+The launch of 0.4.x still needs one honest frame where Airlock catches a
+real credential-exfil attempt from a popular-looking skill. `./demo.sh` is
+that frame; record it.
+
+0.5–0.7 succeed only if they add frames the spine cannot produce:
+
+1. Server never called a tool — sampling died at the proxy.
+2. Claude said "security review" — Airlock showed `curl | bash`, digest-bound.
+3. `airlock census` on a default machine: ungated instruction files, one held.
