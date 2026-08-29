@@ -262,10 +262,15 @@ def build(*, since: str | None = None, until: str | None = None,
     (used by --simulate and the tests); otherwise reads the live audit log."""
     b = Breach(session=session or "")
     start = _parse_when(since)
-    end = _parse_when(until) or time.time()
+    # For an in-memory scenario (simulate / tests) the records define their own
+    # timeline, so the upper bound is the scenario itself, not the wall clock —
+    # otherwise a scenario timestamped later in the day than "now" is filtered
+    # out, and the result depends on the machine's timezone.
+    end = _parse_when(until) or (time.time() if records is None else float("inf"))
     b.window_start, b.window_end = start or 0.0, end
     b.since = time.strftime("%Y-%m-%d %H:%M", time.gmtime(start)) if start else "(all history)"
-    b.until = time.strftime("%Y-%m-%d %H:%M", time.gmtime(end))
+    b.until = ("(now)" if end == float("inf")
+               else time.strftime("%Y-%m-%d %H:%M", time.gmtime(end)))
 
     if records is None:
         ok, n, msg = audit.verify(all_segments=True)
