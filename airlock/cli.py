@@ -494,15 +494,17 @@ def cmd_breach(a) -> int:
     else:
         b = breachmod.build(since=a.since, until=a.until, session=a.session,
                             window=a.window)
-    if a.json:
+    if a.report:
+        # --report writes the markdown artifact regardless of --markdown, so an
+        # IR script never gets silence-and-no-file (F1). --json + --report
+        # writes JSON to the file instead.
+        text = breachmod.to_json(b) if a.json else breachmod.render_markdown(b)
+        pathlib.Path(a.report).write_text(text + "\n", encoding="utf-8")
+        print(f"  wrote {a.report}")
+    elif a.json:
         print(breachmod.to_json(b))
     elif a.markdown:
-        text = breachmod.render_markdown(b)
-        if a.report:
-            pathlib.Path(a.report).write_text(text + "\n", encoding="utf-8")
-            print(f"  wrote {a.report}")
-        else:
-            print(text)
+        print(breachmod.render_markdown(b))
     else:
         print(breachmod.render(b, color=not a.no_color))
     return b.exit_code()

@@ -179,6 +179,63 @@ def main():
     bad = breach.Breach(chain_ok=False, chain_msg="chain broken")
     s.check("broken chain forces exit code 2", bad.exit_code() == 2, bad.exit_code())
 
+    # ---- regressions for the deep-test findings ----------------------------
+    import calendar, time as _t
+
+    # F4 (CRITICAL): log timestamps are UTC; _parse_ts must be timezone-invariant
+    z = "2026-08-25T14:00:00.000Z"
+    want = calendar.timegm(_t.strptime(z, "%Y-%m-%dT%H:%M:%S.%fZ"))
+    results = {}
+    if hasattr(_t, "tzset"):
+        for zone in ("UTC", "America/Los_Angeles", "Asia/Tokyo", "Europe/Moscow"):
+            os.environ["TZ"] = zone
+            _t.tzset()
+            results[zone] = breach._parse_ts(z)
+        os.environ.pop("TZ", None)
+        _t.tzset()
+        s.check("F4: _parse_ts is timezone-invariant (UTC log)",
+                all(v == want for v in results.values()), results)
+    else:
+        s.check("F4: _parse_ts parses UTC log time", breach._parse_ts(z) == want)
+
+    # F9: a Windows-style credential path is classified (backslash normalized)
+    s.check("F9: Windows AWS path is classified",
+            breach.classify_secret(r"C:\Users\me\.aws\credentials") is not None)
+
+    # F2: .env.sample / .env.example are placeholders, not secrets
+    s.check("F2: .env.sample is not a secret",
+            breach.classify_secret("/app/.env.sample") is None)
+    s.check("F2: .env.example is not a secret",
+            breach.classify_secret("/app/.env.example") is None)
+    s.check("F2: a real .env.local is still a secret",
+            breach.classify_secret("/app/.env.local") is not None)
+
+    # F3: a search tool's query text is not egress, even if it names a host
+    s.check("F3: WebSearch query is not egress",
+            breach.egress_host({"tool": "WebSearch",
+                                "resource": "how to use docs.aws.amazon.com api"}) is None)
+
+    # M2: the same secret read twice collapses to one burn
+    b = breach.build(records=[
+        _rec("14:00:00", "Read", "/home/d/.npmrc"),
+        _rec("14:05:00", "Read", "/home/d/.npmrc"),
+    ])
+    s.check("M2: duplicate reads collapse to one burn", len(_find(b, "npm")) == 1,
+            len(_find(b, "npm")))
+
+    # M4: a wild relative --since must not traceback
+    try:
+        breach.build(records=[_rec("14:00:00", "Read", "/x/README.md")],
+                     since="999999999999999999999d")
+        s.check("M4: huge --since does not traceback", True)
+    except Exception as e:
+        s.check("M4: huge --since does not traceback", False, repr(e))
+
+    # L2: nothing before the window appears in the kill chain
+    b = breach.simulate()
+    pre = [k for k in b.kills if k["ts"][11:19] < "14:00:00"]
+    s.check("L2: no pre-window event in the kill chain", not pre, pre)
+
     return s.report()
 
 

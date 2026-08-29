@@ -739,7 +739,15 @@ def verify(path: Path | None = None, *, all_segments: bool = False
     expects_head = False
     for p in files:
         first = True
-        for lineno, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+        try:
+            _text = p.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # Rotation renamed this segment between listing and reading (TOCTOU
+            # while the agent is live and writing). The ledger check already
+            # covers a segment that truly vanished; a concurrent rename is not a
+            # tamper, so skip rather than traceback.
+            continue
+        for lineno, line in enumerate(_text.splitlines(), 1):
             line = line.strip()
             if not line:
                 continue

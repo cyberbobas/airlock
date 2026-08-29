@@ -26,9 +26,11 @@ thing a transcript scraper cannot offer.
 """
 from __future__ import annotations
 
+import calendar
 import json
 import os
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -112,28 +114,51 @@ _ROTATE: list[tuple[re.Pattern, str, str, str, str]] = [
 
 
 def _parse_ts(ts: str) -> float:
+    """Epoch of a log timestamp. Log timestamps are UTC (…Z), so parse them as
+    UTC with `timegm` — `mktime` reads them as *local* time and shifts the whole
+    window by the machine's offset, which silently dropped or misplaced live
+    records on every non-UTC machine (the C1/F4 bug)."""
     for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S"):
         try:
-            return time.mktime(time.strptime(ts, fmt))
+            return calendar.timegm(time.strptime(ts, fmt))
         except Exception:
             continue
     return 0.0
 
 
+# outside this range strftime/gmtime overflow on some platforms; clamp so a
+# wild --since can never traceback (F/M: OverflowError on huge relative values)
+_TS_MIN, _TS_MAX = 0.0, 32503680000.0   # 1970 .. year 3000
+
+
 def _parse_when(s: str | None) -> float | None:
-    """Parse a --since/--until value: date, datetime, or a relative '2d'/'6h'."""
+    """Parse a --since/--until value: date, datetime, or a relative '2d'/'6h'.
+
+    Interpreted as UTC to match the log's own display. Returns None when the
+    value is unparseable so the caller can warn instead of silently widening the
+    window to all history."""
     if not s:
         return None
     m = re.fullmatch(r"(\d+)([dhm])", s.strip())
     if m:
-        n, unit = int(m.group(1)), m.group(2)
-        return time.time() - n * {"d": 86400, "h": 3600, "m": 60}[unit]
+        secs = int(m.group(1)) * {"d": 86400, "h": 3600, "m": 60}[m.group(2)]
+        return max(_TS_MIN, time.time() - secs)
     for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
         try:
-            return time.mktime(time.strptime(s.strip(), fmt))
+            return calendar.timegm(time.strptime(s.strip(), fmt))
         except Exception:
             continue
     return None
+
+
+def _fmt_ts(epoch: float) -> str:
+    """Render an epoch safely — never traceback on an out-of-range value."""
+    if epoch == float("inf"):
+        return "(now)"
+    try:
+        return time.strftime("%Y-%m-%d %H:%M", time.gmtime(max(_TS_MIN, min(_TS_MAX, epoch))))
+    except Exception:
+        return "(out of range)"
 
 
 # ---- data model -------------------------------------------------------------
@@ -178,6 +203,11 @@ class Breach:
 
 
 # ---- helpers ----------------------------------------------------------------
+# .env.sample / config.example / *.dist are placeholders committed to repos,
+# not secrets — flagging them paniced on a file present in most repos (F2).
+_PLACEHOLDER = re.compile(r"\.(sample|example|dist|template)$", re.I)
+
+
 def classify_secret(resource: str, flags=None) -> tuple[str, str, str, str] | None:
     """(kind, label, severity, rotate) for a resource that names a credential.
 
@@ -187,10 +217,15 @@ def classify_secret(resource: str, flags=None) -> tuple[str, str, str, str] | No
     """
     if not resource:
         return None
+    # Windows paths use backslashes; the credential regexes are written with
+    # `/`, so normalise or `C:\Users\me\.aws\credentials` slips through (F9).
+    res = resource.replace("\\", "/")
+    if _PLACEHOLDER.search(res):
+        return None
     for rx, kind, label, sev, rot in _ROTATE:
-        if rx.search(resource):
+        if rx.search(res):
             return kind, label, sev, rot
-    hit = any(rx.search(resource) for _p, rx in _SECRET_RX)
+    hit = any(rx.search(res) for _p, rx in _SECRET_RX)
     if hit or any(str(f).startswith("secrets.") for f in (flags or [])):
         return ("secret", "credential material", "high",
                 "identify the exact secret at this path and rotate it")
@@ -209,9 +244,15 @@ def egress_host(rec: dict) -> str | None:
     m = _URL.search(res)
     if m:
         return m.group(1).split("@")[-1].split(":")[0].lower()
+    # A search tool's `resource` is a free-text query, not a destination — a
+    # hostname mentioned inside the query is not egress (F3). Only a tool whose
+    # resource *is* a target counts, and only when the resource actually starts
+    # with that host, not merely contains one somewhere in prose.
+    if re.search(r"search", tool, re.I):
+        return None
     is_shell = bool(re.search(r"\bBash\b|shell|command|exec", tool, re.I)) or _EGRESS_CMD.search(res)
     if _NET_TOOL.search(tool) and not is_shell:
-        h = _HOSTISH.search(res)
+        h = re.match(r"\s*((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})(?:[:/]|$)", res, re.I)
         if h:
             return h.group(1).lower()
     if _EGRESS_CMD.search(res):
@@ -237,6 +278,10 @@ def _collector(host: str) -> bool:
 
 # ---- engine -----------------------------------------------------------------
 def _read_all() -> list[dict]:
+    # Loads every record into memory to sort globally — peak RSS is a few times
+    # the log size. Fine for a workstation's log; a multi-million-record history
+    # wants a streaming, per-segment merge (segments are already chronological).
+    # Tracked as a known scaling limit, not a correctness issue.
     recs: list[dict] = []
     for p in audit.rotated_files():
         try:
@@ -262,15 +307,22 @@ def build(*, since: str | None = None, until: str | None = None,
     (used by --simulate and the tests); otherwise reads the live audit log."""
     b = Breach(session=session or "")
     start = _parse_when(since)
+    # A value that was given but did not parse must not silently mean "all
+    # history" — a typo'd date would quietly investigate everything (L1/F7).
+    if since and start is None:
+        print(f"airlock breach: could not parse --since {since!r}; using all history",
+              file=sys.stderr)
+    if until and _parse_when(until) is None:
+        print(f"airlock breach: could not parse --until {until!r}; using now",
+              file=sys.stderr)
     # For an in-memory scenario (simulate / tests) the records define their own
     # timeline, so the upper bound is the scenario itself, not the wall clock —
     # otherwise a scenario timestamped later in the day than "now" is filtered
     # out, and the result depends on the machine's timezone.
     end = _parse_when(until) or (time.time() if records is None else float("inf"))
     b.window_start, b.window_end = start or 0.0, end
-    b.since = time.strftime("%Y-%m-%d %H:%M", time.gmtime(start)) if start else "(all history)"
-    b.until = ("(now)" if end == float("inf")
-               else time.strftime("%Y-%m-%d %H:%M", time.gmtime(end)))
+    b.since = _fmt_ts(start) if start else "(all history)"
+    b.until = _fmt_ts(end)
 
     if records is None:
         ok, n, msg = audit.verify(all_segments=True)
@@ -391,6 +443,18 @@ def build(*, since: str | None = None, until: str | None = None,
 
     order = {"confirmed": 0, "probable": 1, "possible": 2}
     b.burns.sort(key=lambda x: (order.get(x.confidence, 3), x.read_ts))
+    # The same secret read twice is one thing to rotate, not two identical lines
+    # in the report and the checklist (M2). Collapse by (kind, resource), keeping
+    # the worst-case (the sort above put the highest confidence first).
+    seen: set = set()
+    deduped = []
+    for bn in b.burns:
+        key = (bn.kind, bn.read_resource.replace("\\", "/"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(bn)
+    b.burns = deduped
     b.clean = not b.burns
     return b
 
@@ -437,8 +501,9 @@ def simulate() -> Breach:
           resource="curl https://api.anthropic.com/v1/messages",
           effective="allow", decision="allow"),
     ]
-    b = build(records=recs, window=CORRELATE_WINDOW)
-    b.since, b.until = day + "14:00", day + "14:31"
+    # window starts at 14:00 so the 13:40 baseline calls stay baseline (and out
+    # of the kill chain), matching the printed window header (L2).
+    b = build(records=recs, since=day + "14:00:00", window=CORRELATE_WINDOW)
     b.chain_msg = "simulated incident — no real audit log was read"
     return b
 
@@ -487,10 +552,13 @@ def render(b: Breach, *, color: bool = True) -> str:
     for k in b.kills:
         mark = f"{c['h']}✗{c['0']}" if k["blocked"] else f"{c['l']}✓{c['0']}"
         kind = "read " if k["kind"] == "read" else "egress"
-        tgt = k["target"]
-        tgt = (tgt[:66] + "…") if len(tgt) > 67 else tgt
+        # target and tool are attacker-controlled — disarm ANSI/newlines so a
+        # crafted path cannot print a fabricated line (F6). audit.safe truncates.
+        tgt = audit.safe(k["target"], 67)
+        if len(k["target"]) > 67:
+            tgt += "…"
         out.append(f"    {c['d']}{k['ts'][11:19]}{c['0']}  {mark} {kind}  "
-                   f"{c['c']}{k['tool']}{c['0']}  {tgt}")
+                   f"{c['c']}{audit.safe(k['tool'], 40)}{c['0']}  {tgt}")
 
     # burns → rotate
     out.append("")
@@ -506,13 +574,13 @@ def render(b: Breach, *, color: bool = True) -> str:
         out.append("")
         out.append(f"  {c['m']}GATE CHANGED IN WINDOW{c['0']}")
         for g in b.gate_changes:
-            out.append(f"    {c['d']}{g['ts'][11:19]}{c['0']}  ⚠ {g['detail']}")
+            out.append(f"    {c['d']}{g['ts'][11:19]}{c['0']}  ⚠ {audit.safe(g['detail'], 80)}")
 
     if b.model_egress:
         out.append("")
         out.append(f"  {c['d']}LEAKED TO MODEL CONTEXT (normal work, not exfil){c['0']}")
         for e in b.model_egress:
-            out.append(f"    {c['d']}{e['ts'][11:19]}  {e['host']}{c['0']}")
+            out.append(f"    {c['d']}{e['ts'][11:19]}  {audit.safe(e['host'], 80)}{c['0']}")
 
     # checklist
     out.append("")
@@ -544,8 +612,10 @@ def render_markdown(b: Breach) -> str:
     out.append("| time | outcome | kind | tool | target |")
     out.append("|---|---|---|---|---|")
     for k in b.kills:
+        tgt = audit.safe(k["target"], 120).replace("`", "'").replace("|", "\\|")
+        tool = audit.safe(k["tool"], 40).replace("|", "\\|")
         out.append(f"| {k['ts'][11:19]} | {'BLOCKED' if k['blocked'] else 'allowed'} | "
-                   f"{k['kind']} | {k['tool']} | `{k['target']}` |")
+                   f"{k['kind']} | {tool} | `{tgt}` |")
 
     out.append("\n## Burned — rotate\n")
     for bn in b.burns:
