@@ -1,0 +1,19 @@
+name: agentpipe
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+jobs:
+  agentpipe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cyberbobas/agentpipe@v0
+        with:
+          fail-on: high
+          comment: true
