@@ -19,7 +19,7 @@ from pathlib import Path
 from . import (__version__, audit, batch, bench as benchmod, breach as breachmod,
                config, contracts, export as exportmod, feed, grants, install,
                monitor as monitormod, pins, propose as proposemod,
-               report as reportmod, scan)
+               report as reportmod, scan, summarize as summarizemod)
 from .policy import RANK, Policy
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -409,6 +409,20 @@ def cmd_init(a) -> int:
               + _C['0'])
     for n in res.notes:
         print(f"  {_C['d']}· {n}{_C['0']}")
+    # AI tier: --tier, else $AIRLOCK_TIER, else an interactive pick (default
+    # standard). Written into the policy init just created; changeable later with
+    # `airlock ai-tier`.
+    tier = getattr(a, "tier", None) or os.environ.get("AIRLOCK_TIER") or _choose_tier()
+    if tier in ("lite", "standard", "pro"):
+        up = config.user_policy()
+        if up.exists():
+            _write_tier(up, tier)
+            print(f"  {_C['l']}✓{_C['0']} AI tier: {tier}")
+            if tier in ("standard", "pro"):
+                from .ai import builtin
+                if builtin.model_path() is None:
+                    print(f"    {_C['d']}install the model: "
+                          f"airlock ai-model --url <llamafile-url>{_C['0']}")
     print(f"\n  {_C['d']}Next: restart your agent, then `airlock doctor`. "
           f"Undo anytime with `airlock uninstall`.{_C['0']}\n")
     audit.record("install", source="cli", effective="admit",
@@ -673,6 +687,207 @@ def cmd_report(a) -> int:
     return 0
 
 
+def cmd_summary(a) -> int:
+    days = None if a.all else float(a.days)
+    facts, narrative = summarizemod.summarize(days=days, session=a.session or "")
+    if a.json:
+        print(json.dumps(facts.to_dict(), indent=2, ensure_ascii=False))
+    elif a.markdown:
+        print(summarizemod.render_markdown(facts, narrative))
+    else:
+        print(summarizemod.render(facts, narrative,
+                                  color=sys.stdout.isatty() and not a.no_color))
+    return 0
+
+
+def cmd_ai_status(a) -> int:
+    from . import ai
+    from .ai import builtin
+    pol = None
+    try:
+        pol = Policy.resolve()
+        tier, cloud = pol.tier, pol.cloud
+    except Exception:
+        tier, cloud = "lite", "off"
+    mp = builtin.model_path()
+    backend = ai.get_backend(pol)
+    avail = backend.available()
+    print(f"tier:      {tier}")
+    print(f"cloud:     {cloud}")
+    print(f"model:     {mp if mp else '(not installed)'}")
+    prov = (pol.ai.get("provider") if (pol and isinstance(pol.ai, dict)) else None) or {}
+    if prov.get("preset"):
+        from .ai import keys
+        state = "key set" if keys.has_key(prov["preset"]) else "key missing"
+        print(f"provider:  {prov['preset']}  ({state})")
+    print(f"backend:   {'available' if avail else 'unavailable (using non-AI path)'}"
+          f"  [{type(backend).__name__}]")
+    if tier != "lite" and not mp and not avail:
+        print("hint:      standard/pro tier but no model installed — "
+              "summary/judge fall back to rules. Install the model to enable AI.")
+    return 0
+
+
+def cmd_ai_dataset(a) -> int:
+    from .ai import dataset
+    days = None if a.all else float(a.days)
+    n = dataset.export(a.out, days=days, session=a.session or "",
+                       human_only=not a.include_fallback)
+    print(f"wrote {n} training example(s) to {a.out}")
+    if n == 0:
+        print("none yet — examples come from gray-zone calls a human answered "
+              "allow/block. Use Airlock a while, then re-run.")
+    return 0
+
+
+def cmd_ai_key(a) -> int:
+    from .ai import keys, providers
+    prov = a.provider
+    if prov not in providers.PRESETS:
+        print(f"unknown provider {prov!r}. choices: {', '.join(providers.PRESETS)}")
+        return 2
+    if a.delete:
+        keys.delete_key(prov); print(f"deleted stored key for {prov}"); return 0
+    if a.show:
+        print(f"{prov}: {'key set' if keys.has_key(prov) else '(no key)'}"); return 0
+    import getpass
+    val = getpass.getpass(f"paste API key for {prov} (input hidden): ").strip()
+    if not val:
+        print("no key entered — nothing stored"); return 1
+    keys.set_key(prov, val)
+    print(f"stored key for {prov}. set `tier: pro` and an `ai.provider` in your "
+          f"policy, and `cloud: on` for a cloud provider, to use it.")
+    return 0
+
+
+def _write_tier(p, tier: str) -> None:
+    """Set the `tier:` key in a policy file, preserving the rest (and comments)."""
+    import re
+    text = p.read_text(encoding="utf-8")
+    line = f"tier: {tier}"
+    if re.search(r"(?m)^tier:.*$", text):
+        text = re.sub(r"(?m)^tier:.*$", line, text)
+    else:
+        text = line + "\n" + text
+    p.write_text(text, encoding="utf-8")
+
+
+def _choose_tier():
+    """Interactive tier picker for `init`. None if not a TTY (leave the default)."""
+    if not sys.stdin.isatty():
+        return None
+    print("\n  AI tier:")
+    print("    [1] lite      just the firewall, no model")
+    print("    [2] standard  built-in offline AI (summary + judge)   (recommended)")
+    print("    [3] pro       standard, plus bring your own model")
+    try:
+        ans = input("  choose 1/2/3 [2]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+    return {"1": "lite", "": "standard", "2": "standard", "3": "pro"}.get(ans, "standard")
+
+
+def cmd_ai_tier(a) -> int:
+    p = config.user_policy()
+    if not a.tier:
+        try:
+            print(Policy.resolve().tier)
+        except Exception:
+            print("lite")
+        return 0
+    if a.tier not in ("lite", "standard", "pro"):
+        print("tier must be lite, standard, or pro"); return 2
+    if not p.exists():
+        print(f"no user policy at {p} — run `airlock init` first (or set AIRLOCK_POLICY).")
+        return 1
+    _write_tier(p, a.tier)
+    try:
+        Policy.load(p)            # validate the edit; never leave a broken policy
+    except Exception as e:
+        print(f"refused: the edit would make the policy invalid ({e})"); return 1
+    print(f"tier set to {a.tier} in {p}")
+    if a.tier in ("standard", "pro"):
+        from .ai import builtin
+        if builtin.model_path() is None:
+            print("note: no model installed yet — install one with "
+                  "`airlock ai-model --url <llamafile-url>` (or --path). Until then "
+                  "the summary/judge fall back to the non-AI path.")
+    return 0
+
+
+def cmd_ai_provider(a) -> int:
+    import yaml
+    from .ai import providers, keys
+    p = config.user_policy()
+    if a.preset not in providers.PRESETS:
+        print(f"unknown provider {a.preset!r}. choices: {', '.join(providers.PRESETS)}")
+        return 2
+    if not p.exists():
+        print(f"no user policy at {p} — run `airlock init` first."); return 1
+    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        print("policy is not a mapping — cannot edit."); return 1
+    prov = {"preset": a.preset}
+    if a.model:
+        prov["model"] = a.model
+    if a.base_url:
+        prov["base_url"] = a.base_url
+    ai = data.get("ai")
+    if not isinstance(ai, dict):
+        ai = {}
+    ai["provider"] = prov
+    data["ai"] = ai
+    if a.cloud:
+        data["cloud"] = a.cloud
+    p.write_text(yaml.safe_dump(data, sort_keys=False, default_flow_style=False),
+                 encoding="utf-8")
+    try:
+        pol = Policy.load(p)                 # never leave a broken policy behind
+    except Exception as e:
+        print(f"refused: the edit would make the policy invalid ({e})"); return 1
+    print(f"provider set to {a.preset}" + (f" (model {a.model})" if a.model else "")
+          + f" in {p}")
+    spec = providers.PRESETS[a.preset]
+    if not spec["local"]:
+        if not keys.has_key(a.preset):
+            print(f"  · store a key:   airlock ai-key --provider {a.preset}")
+        if pol.cloud != "on":
+            print(f"  · allow egress:  airlock ai-provider {a.preset} --cloud on "
+                  f"(cloud is off by default)")
+    if pol.tier != "pro":
+        print("  · enable it:     airlock ai-tier pro  (BYO providers run in the pro tier)")
+    return 0
+
+
+def cmd_ai_model(a) -> int:
+    import shutil
+    from .ai import builtin
+    d = builtin.models_dir()
+    if not a.path and not a.url:
+        mp = builtin.model_path()
+        if mp:
+            sz = mp.stat().st_size / (1024 * 1024)
+            print(f"model: {mp}  ({sz:.0f} MB)")
+        else:
+            print(f"no model installed. Drop a .llamafile in {d}, or use --url/--path.")
+        return 0
+    d.mkdir(parents=True, exist_ok=True)
+    dest = d / "airlock-judge.llamafile"
+    if a.path:
+        shutil.copyfile(a.path, dest)
+    else:
+        import urllib.request
+        print(f"downloading {a.url} …")
+        urllib.request.urlretrieve(a.url, dest)
+    try:
+        os.chmod(dest, 0o755)
+    except Exception:
+        pass
+    print(f"installed model at {dest}")
+    return 0
+
+
 def cmd_bench(a) -> int:
     r = benchmod.run(a.decisions, a.calls)
     print(json.dumps(r, indent=2) if a.json else benchmod.render(r))
@@ -706,12 +921,68 @@ def _exec_module(mod: str, argv: list[str]) -> int:
 
 
 # ---- parser ------------------------------------------------------------
+_MENU = """\
+Airlock gates every tool call, MCP call and skill your AI agent makes against a
+least-privilege policy: each is allowed, asked, or blocked, with an audit trail.
+An optional local AI ("AI in the middle") can judge gray-zone calls in real time
+and recap a session in plain language.
+
+command groups (run `airlock <command> -h` for the details of any one):
+
+  first run
+    init        wire Airlock into your agents, and pick an AI tier
+    doctor      show what is actually enforcing right now
+    demo        watch a key-theft get refused (safe, self-contained)
+
+  every day
+    summary     plain-language recap of what your agent just did
+    allow       permit what was just blocked, as a reviewed grant
+    log         recent decisions (allow / ask / block)
+    monitor     live screen of decisions as they happen
+    report      what Airlock did over a period
+    check       dry-run one tool call against the policy
+
+  AI in the middle   (optional brain; tiers: lite | standard | pro)
+    ai-status   which tier / model / provider is active
+    ai-tier     switch tier: lite (rules only), standard (built-in AI), pro (BYO)
+    ai-model    install the built-in model (one self-contained llamafile)
+    ai-provider point the pro tier at your own model (Claude, OpenAI, Ollama…)
+    ai-key      store an API key for a pro provider (kept in the OS keychain)
+    ai-dataset  export training data from calls you answered, to teach the judge
+
+  policy & admission
+    policy      view / edit / propose the active policy
+    profile     show or switch the policy profile (default / paranoid / yolo)
+    scan        static admission scan of a skill or MCP folder
+    pins        block a server whose toolset changed since you approved it
+    contracts   per-skill least-privilege contracts
+
+  evidence & upkeep
+    breach      reconstruct what was touched and what to rotate
+    verify      check the audit-log hash chain
+    export      audit records for a SIEM
+    update      refresh the threat-indicator feed
+    bench       measured overhead per call
+    uninstall   remove every change Airlock made
+
+The AI is optional and safe by design: it only ever makes a call STRICTER, never
+looser, and falls back to plain rules when no model is present. Cloud is off by
+default. New here?   airlock init   then   airlock demo
+"""
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="airlock",
-                                description="Runtime firewall for AI coding agents.")
+    p = argparse.ArgumentParser(
+        prog="airlock",
+        description="Runtime firewall for AI coding agents — with an optional AI brain.",
+        epilog=_MENU,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument("--version", action="version",
                    version=f"airlock {__version__}")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    # Collapse the giant {scan,check,…} brace list into a tidy <command>; the
+    # grouped, explained menu lives in the epilog above.
+    sub = p.add_subparsers(dest="cmd", required=True, metavar="<command>")
 
     s = sub.add_parser("scan", help="static admission scan of a skill/MCP folder")
     s.add_argument("path")
@@ -753,6 +1024,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-hook", action="store_true", help="skip the Claude Code hook")
     s.add_argument("--no-mcp", action="store_true", help="skip wrapping MCP servers")
     s.add_argument("--force", action="store_true", help="overwrite an existing policy")
+    s.add_argument("--tier", choices=("lite", "standard", "pro"),
+                   help="AI tier to set (default: ask, or $AIRLOCK_TIER)")
     s.add_argument("--mcp-config", action="append", metavar="PATH",
                    help="also gate this MCP config file (repeatable; any agent with a standard mcpServers file)")
     s.set_defaults(fn=cmd_init)
@@ -800,6 +1073,54 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--markdown", action="store_true")
     s.add_argument("--no-color", action="store_true")
     s.set_defaults(fn=cmd_report)
+
+    s = sub.add_parser("summary", help="plain-language recap of what the agent did")
+    s.add_argument("--days", type=float, default=1.0, help="window in days (default 1)")
+    s.add_argument("--all", action="store_true", help="whole log, ignore --days")
+    s.add_argument("--session", default="", help="only this session id")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--markdown", action="store_true")
+    s.add_argument("--no-color", action="store_true")
+    s.set_defaults(fn=cmd_summary)
+
+    s = sub.add_parser("ai-status", help="which AI tier/model is active")
+    s.set_defaults(fn=cmd_ai_status)
+
+    s = sub.add_parser("ai-dataset",
+                       help="export a training set from human-answered gray-zone calls")
+    s.add_argument("--out", default="airlock-judge.jsonl", help="output JSONL path")
+    s.add_argument("--days", type=float, default=30.0, help="window in days (default 30)")
+    s.add_argument("--all", action="store_true", help="whole log, ignore --days")
+    s.add_argument("--session", default="", help="only this session id")
+    s.add_argument("--include-fallback", action="store_true",
+                   help="also include unattended fallback resolutions (not just human answers)")
+    s.set_defaults(fn=cmd_ai_dataset)
+
+    s = sub.add_parser("ai-key",
+                       help="store/delete an API key for a pro provider (OS keychain)")
+    s.add_argument("--provider", required=True,
+                   help="claude|openai|deepseek|qwen|kimi|glm|ollama|custom")
+    s.add_argument("--delete", action="store_true", help="remove the stored key")
+    s.add_argument("--show", action="store_true", help="say whether a key is stored")
+    s.set_defaults(fn=cmd_ai_key)
+
+    s = sub.add_parser("ai-tier", help="show or set the AI tier (lite|standard|pro)")
+    s.add_argument("tier", nargs="?", help="lite | standard | pro (omit to show current)")
+    s.set_defaults(fn=cmd_ai_tier)
+
+    s = sub.add_parser("ai-provider",
+                       help="point the pro tier at your own model (Claude, OpenAI, Ollama…)")
+    s.add_argument("preset", help="claude|openai|deepseek|qwen|kimi|glm|ollama|custom")
+    s.add_argument("--model", help="override the model id")
+    s.add_argument("--base-url", dest="base_url", help="override base URL (custom/self-hosted)")
+    s.add_argument("--cloud", choices=("off", "on", "locked-off"),
+                   help="allow cloud egress (required for a cloud provider)")
+    s.set_defaults(fn=cmd_ai_provider)
+
+    s = sub.add_parser("ai-model", help="install or show the built-in model (llamafile)")
+    s.add_argument("--path", help="copy a local .llamafile into place")
+    s.add_argument("--url", help="download a .llamafile from a URL")
+    s.set_defaults(fn=cmd_ai_model)
 
     s = sub.add_parser("bench", help="measured overhead per call")
     s.add_argument("--decisions", type=int, default=2000)
@@ -858,6 +1179,13 @@ def build_parser() -> argparse.ArgumentParser:
         s = sub.add_parser(name, help=f"run {mod}")
         s.add_argument("rest", nargs=argparse.REMAINDER)
         s.set_defaults(fn=lambda a, _m=mod: _exec_module(_m, a.rest))
+    # The grouped, explained menu lives in the epilog; drop argparse's flat
+    # auto-list so `--help` shows one clean menu instead of two. Parsing and
+    # `airlock <cmd> -h` are unaffected (only the help listing is hidden).
+    try:
+        sub._choices_actions.clear()
+    except Exception:
+        pass
     return p
 
 
@@ -872,7 +1200,11 @@ def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] in _PASSTHROUGH:
         return _exec_module(_PASSTHROUGH[argv[0]], argv[1:])
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    if not argv:                       # bare `airlock` -> show the full menu
+        parser.print_help()
+        return 0
+    args = parser.parse_args(argv)
     if getattr(args, "cmd", "") in ("pins", "contracts") and \
             args.action not in ("list",) and not args.server_id:
         print(f"airlock {args.cmd} {args.action}: needs a server id", file=sys.stderr)

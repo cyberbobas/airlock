@@ -114,6 +114,13 @@ class Policy:
     # but only ever to make one stricter — see resolve().
     overlay: "Policy | None" = None
     digest: str = ""           # of the file this was loaded from
+    # ---- AI layer (see docs/AI-SPEC.md) --------------------------------
+    # Backward-compatible: policies without these keys load exactly as before.
+    # The AI can only ever TIGHTEN a decision and fails closed when the model is
+    # unavailable, so these never weaken enforcement (the core invariant holds).
+    tier: str = "lite"         # lite | standard | pro
+    ai: dict = field(default_factory=dict)   # {summary:{...}, judge:{...}, provider:{...}}
+    cloud: str = "off"         # off | on | locked-off
 
     # ---- loading -------------------------------------------------------
     @classmethod
@@ -151,6 +158,11 @@ class Policy:
             for sev, act in (over.escalate or {}).items():
                 cur = pol.escalate.get(sev)
                 pol.escalate[sev] = act if cur is None else _stricter(cur, act)
+            # Cloud egress can only be tightened by a repo overlay, never opened:
+            # locked-off > off > on. A cloned repo must not switch cloud AI on.
+            _cl = {"on": 0, "off": 1, "locked-off": 2}
+            if _cl.get(over.cloud, 0) > _cl.get(pol.cloud, 0):
+                pol.cloud = over.cloud
         return pol
 
     @classmethod
@@ -188,6 +200,9 @@ class Policy:
             path=p,
             profile=data.get("profile", ""),
             digest=digest,
+            tier=str(data.get("tier") or "lite").lower(),
+            ai=data.get("ai") or {},
+            cloud=str(data.get("cloud") or "off").lower(),
         )
         pol.mode = os.environ.get("AIRLOCK_MODE", data.get("mode", GUARD)).lower()
         pol.validate()
@@ -229,6 +244,13 @@ class Policy:
             if exp is not None and not _DATE.match(str(exp)):
                 raise ValueError(f"policy: grant #{i} has expires={exp!r} — "
                                  f"write YYYY-MM-DD, or leave it out")
+        # AI layer — reject a half-understood setting rather than run on it.
+        if self.tier not in ("lite", "standard", "pro"):
+            raise ValueError(f"policy: tier must be lite/standard/pro, got {self.tier!r}")
+        if self.cloud not in ("off", "on", "locked-off"):
+            raise ValueError(f"policy: cloud must be off/on/locked-off, got {self.cloud!r}")
+        if not isinstance(self.ai, dict):
+            raise ValueError("policy: ai must be a mapping")
 
     # ---- decision ------------------------------------------------------
     def decide(self, tool: str, args: dict | None) -> Decision:

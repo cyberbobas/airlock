@@ -29,6 +29,7 @@ import os
 import sys
 
 from . import audit, config, contracts, notify, pins, policy as policy_mod, scan
+from .ai import judge as aijudge
 from .policy import ASK, BLOCK, OBSERVE, Decision, Policy
 
 EXIT_ALLOW, EXIT_BLOCK = 0, 2
@@ -160,7 +161,12 @@ def main() -> int:
     # The hook HAS an interactive channel (Claude Code's own prompt), so unlike
     # the proxy it does NOT apply ask_fallback: `ask` stays `ask`. The mode
     # decides how much the unmatched middle is worth interrupting for.
-    eff = policy.posture(d).action
+    d = policy.posture(d)
+    # inline AI judge — tighten-only, fail-safe, gray-zone by default. No-op in
+    # the `lite` tier or when no model is installed.
+    d = aijudge.consult(d, tool=tool, args=args, server=(server or ""),
+                        plane="hook", cfg=policy)
+    eff = d.action
 
     audit.record("decision", source="hook", tool=tool, decision=d.action,
                  effective=eff, reason=d.reason, args=args,

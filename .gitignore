@@ -8,3 +8,10 @@ dist/
 # stray key material / signing artifacts — never publish these
 *.key
 audit.key
+
+# AI training artifacts (large / may hold redacted traces) — never commit
+.venv-train/
+training/data/
+training/out/
+*.llamafile
+*.gguf

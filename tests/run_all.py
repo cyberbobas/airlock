@@ -5,7 +5,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SUITES = ["test_e2e.py", "test_contract.py", "test_ask.py", "test_redteam.py",
           "test_scan.py", "test_policy.py",
           "test_proxy_robustness.py", "test_product.py", "test_regressions.py", "test_deep.py", "test_audit.py",
-          "test_properties.py", "test_stream.py", "test_algebra.py", "test_ask_channel.py", "test_boundary.py", "test_lifecycle.py", "test_onboarding.py", "test_breach.py"]
+          "test_properties.py", "test_stream.py", "test_algebra.py", "test_ask_channel.py", "test_boundary.py", "test_lifecycle.py", "test_onboarding.py", "test_breach.py", "test_ai.py"]
 
 
 def main() -> int:
