@@ -207,6 +207,52 @@ metadata, known exfil collectors and download-and-execute are checked *before*
 grants, against every argument. `airlock allow` will tell you it refused rather
 than write a grant that quietly does nothing.
 
+## allow / block / ask — and your agent's permission mode
+
+Every call ends as one of three, and the difference matters when you run more
+than one agent:
+
+* **block** — Airlock stops the call itself. Absolute blocks (secrets, exfil
+  collectors, `rm -rf /`, cloud metadata, curl-pipe-shell) fire **regardless of
+  what the agent is set to** — the agent never gets to run it.
+* **allow** — the call goes through.
+* **ask** — Airlock flags the call as one a human should approve. In the
+  **hook** path (an agent's native tools) Airlock hands that flag to the agent's
+  *own* permission prompt and records `ask`. So **whether you actually get asked
+  is the agent's decision, not Airlock's.** If the agent runs in an
+  auto-approve mode — grok's `permission_mode = "always-approve"`, Claude Code's
+  `bypassPermissions`, `--dangerously-skip-permissions`, etc. — it approves the
+  `ask` itself and you are never prompted. Claude Code in its default mode shows
+  *you* the prompt.
+
+The takeaway: **an auto-approving agent silences `ask`, but never an absolute
+block.** If you want Airlock to hard-stop the gray zone too (not defer it to the
+agent), raise the posture so an `ask` becomes a refusal when no human answers:
+
+```bash
+airlock profile paranoid           # ask on far more, refuse an unanswered ask
+# or keep default but fail an unattended ask closed:
+export AIRLOCK_UNATTENDED=block    # (or set `unattended: block` in the policy)
+```
+
+## Watching your agents — `airlock monitor`
+
+`airlock log` is the rear-view mirror; **`airlock monitor`** is the windscreen: a
+live, full-screen board that updates as decisions land. It shows the allow /
+block / ask split, the **top block reasons** and **busiest tools** for the
+session, and a live feed where every entry carries the command and, for a block,
+the reason in red (`blocked: known exfil collector`). It draws on the alternate
+screen (like `htop`), so it never litters your scrollback.
+
+**One gate, several agents — who did what.** When you run more than one agent
+behind Airlock, `airlock init` wires each one's hook stamped with its name
+(`airlock-hook --agent claude` / `--agent grok` / `--agent cursor`), so every
+decision is attributed to the agent that made it. The monitor then shows a
+**BY AGENT** line — `claude ✗2/40   grok ✗31/54   cursor ✗5/38` (blocked/total)
+— and an agent column per row, so at a glance you see *which* agent is reaching
+for the things that get blocked. (The label is self-reported via `$AIRLOCK_AGENT`
+and bound into the signed audit chain, so it cannot be rewritten after the fact.)
+
 ## What is actually covered
 
 Being precise about this matters more than the feature list, because a mixed
@@ -216,7 +262,9 @@ fleet is the normal case.
 |---|---|---|
 | **Any MCP server, any agent** (stdio) | ✅ | `airlock-mcp` proxy — vendor-neutral, this is the broad one |
 | Claude Code native tools | ✅ | PreToolUse hook decides; PostToolUse records what ran |
-| Cursor / Windsurf / Cline / Codex native tools | ❌ | their MCP servers are gated; their *built-in* file and shell tools are not |
+| grok native tools | ✅ | PreToolUse hook in its `config.toml` (Claude-compatible), stamped `--agent grok` |
+| Cursor native tools | ✅ | PreToolUse hook in `~/.cursor/hooks.json`, stamped `--agent cursor` |
+| Windsurf / Cline / Codex native tools | ❌ | their MCP servers are gated; their *built-in* file and shell tools are not (no PreToolUse hook) |
 | MCP over HTTP/SSE | ❌ | stdio only today |
 | A process opening its own socket | ❌ | needs an OS-level egress shim (plane ③) |
 | A shell command launching an MCP server directly | ⚠️ | blocked by a policy rule, not by the OS — see Limits |

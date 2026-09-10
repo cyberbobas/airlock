@@ -53,7 +53,8 @@ except ImportError:  # pragma: no cover
 
 GENESIS = "0" * 16
 _CHAINED = ("ts", "event", "source", "server", "tool", "decision", "effective",
-            "reason", "resource", "detail", "session", "args_digest", "flags", "prev")
+            "reason", "resource", "detail", "session", "agent", "args_digest",
+            "flags", "prev")
 # The ledger chains over its own fields. `detail` on the anchor record carries
 # "ledger=<digest>" rather than a dedicated key, because adding a name to
 # _CHAINED would change every historical record's digest and invalidate logs
@@ -260,7 +261,7 @@ def _now() -> str:
 def record(event: str, *, source: str, tool: str = "", server: str = "",
            decision: str = "", effective: str = "", reason: str = "",
            args=None, flags=None, session: str = "", extra: str = "",
-           resource: str = "") -> dict:
+           resource: str = "", agent: str = "") -> dict:
     if not _ROTATING and event != "audit_start":
         try:
             live = audit_path()
@@ -280,6 +281,13 @@ def record(event: str, *, source: str, tool: str = "", server: str = "",
         "resource": resource,     # the concrete target (path / host / command)
         "detail": extra,          # human-readable payload (tool list, scan hit)
         "session": session or os.environ.get("AIRLOCK_SESSION", ""),
+        # which agent made the call (claude / grok / cursor / ...). Self-reported
+        # via $AIRLOCK_AGENT so one gate in front of several agents can say WHOSE
+        # call it blocked. It is in _CHAINED (bound by the digest) like every
+        # other field: an attacker must not be able to rewrite "grok did it" to
+        # "claude did it" without breaking the chain. Self-report only settles
+        # WHICH agent claims a call, not whether the log was tampered with after.
+        "agent": agent or os.environ.get("AIRLOCK_AGENT", ""),
         "args_digest": _digest(args) if args is not None else "",
         "flags": flags or [],
     }

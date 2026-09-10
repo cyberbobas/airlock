@@ -84,8 +84,27 @@ def _record_outcome(payload: dict) -> int:
     return EXIT_ALLOW
 
 
+def _agent_from_argv() -> str:
+    """`airlock-hook --agent grok` — the agent this gate sits in front of, baked
+    into the hook command by `airlock init` so each of several agents behind one
+    gate is attributed to itself in the log and the monitor."""
+    argv = sys.argv[1:]
+    for i, a in enumerate(argv):
+        if a == "--agent" and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith("--agent="):
+            return a.split("=", 1)[1]
+    return ""
+
+
 def main() -> int:
     from . import config as _cfg; _cfg.force_utf8()
+    # A named gate stamps every record it writes with the agent, so `airlock
+    # monitor`/`log` can say WHOSE call this was. The env var is the fallback for
+    # a gate wired without the flag.
+    _ag = _agent_from_argv()
+    if _ag:
+        os.environ["AIRLOCK_AGENT"] = _ag
     raw = sys.stdin.read()
     try:
         payload = json.loads(raw) if raw.strip() else {}
