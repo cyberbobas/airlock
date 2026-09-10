@@ -107,3 +107,32 @@ def summary_prompt(facts: dict) -> str:
     import json
 
     return "Session facts (JSON):\n" + json.dumps(facts, ensure_ascii=False, indent=2)
+
+
+# --- analyst (scheduled audit review) ---------------------------------------
+
+ANALYST_SYSTEM = (
+    "You are a security analyst reviewing an AI coding agent's activity from "
+    "Airlock's audit log, over a time window. You are given structured facts and "
+    "pre-computed suspicion signals (never raw secrets). Your job is triage: say "
+    "whether anything looks like an attack or a compromised/rogue agent, and what "
+    "a human should check. Weigh what actually matters — credential or secret "
+    "reads, data exfiltration, reverse shells, destructive or infra-wiping "
+    "commands, log/audit erasure, cloud-metadata SSRF, a toolset that changed "
+    "after it was pinned (rug pull), one agent blocked far more than the others, "
+    "or the same target hit again and again (persistence). Routine blocked noise "
+    "(a linter, a normal git push) is not an incident. End with one line: "
+    "'VERDICT: clean' or 'VERDICT: review — <one concrete reason>'. "
+    "Be concrete and short: 4-8 sentences, no fluff, no marketing."
+)
+
+
+def analyst_prompt(facts: dict, signals: dict) -> str:
+    """User message for a scheduled audit review: window facts + suspicion signals."""
+    import json
+
+    return (
+        "Window facts (JSON):\n" + json.dumps(facts, ensure_ascii=False, indent=2)
+        + "\n\nPre-computed suspicion signals (JSON):\n"
+        + json.dumps(signals, ensure_ascii=False, indent=2)
+    )

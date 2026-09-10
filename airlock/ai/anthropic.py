@@ -13,8 +13,8 @@ import urllib.request
 
 from .base import JudgeContext, Verdict
 from .openai_compat import _parse_verdict
-from .prompts import (JUDGE_SYSTEM, SUMMARY_SYSTEM, judge_prompt, redact_obj,
-                      summary_prompt)
+from .prompts import (ANALYST_SYSTEM, JUDGE_SYSTEM, SUMMARY_SYSTEM,
+                      analyst_prompt, judge_prompt, redact_obj, summary_prompt)
 
 API_VERSION = "2023-06-01"
 
@@ -71,4 +71,12 @@ class AnthropicBackend:
     def summarize(self, facts: dict, *, timeout_ms: int = 20000) -> str:
         out = self._messages(SUMMARY_SYSTEM, summary_prompt(redact_obj(facts)),
                             timeout_ms=timeout_ms, max_tokens=400, temperature=0.2)
+        return (out or "").strip()
+
+    def investigate(self, facts: dict, signals: dict, *,
+                    timeout_ms: int = 30000) -> str:
+        out = self._messages(
+            ANALYST_SYSTEM,
+            analyst_prompt(redact_obj(facts), redact_obj(signals)),
+            timeout_ms=timeout_ms, max_tokens=400, temperature=0.2)
         return (out or "").strip()

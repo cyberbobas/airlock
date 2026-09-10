@@ -90,6 +90,13 @@ class Backend(Protocol):
         """Narrative summary of a session from structured facts. "" if it can't."""
         ...
 
+    def investigate(self, facts: dict, signals: dict, *,
+                    timeout_ms: int = 30000) -> str:
+        """Security triage of an audit window: facts + pre-computed suspicion
+        signals in, an analyst narrative ending in a VERDICT line out. "" if the
+        backend can't answer, so the caller keeps the deterministic report."""
+        ...
+
 
 class NullBackend:
     """The no-AI backend. Used by the `lite` tier and as the universal fallback.
@@ -104,4 +111,8 @@ class NullBackend:
         return None
 
     def summarize(self, facts: dict, *, timeout_ms: int = 20000) -> str:
+        return ""
+
+    def investigate(self, facts: dict, signals: dict, *,
+                    timeout_ms: int = 30000) -> str:
         return ""

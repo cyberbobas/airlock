@@ -21,8 +21,8 @@ import urllib.error
 import urllib.request
 
 from .base import ASK, Backend, JudgeContext, Verdict
-from .prompts import (JUDGE_SYSTEM, SUMMARY_SYSTEM, judge_prompt, redact_obj,
-                      summary_prompt)
+from .prompts import (ANALYST_SYSTEM, JUDGE_SYSTEM, SUMMARY_SYSTEM,
+                      analyst_prompt, judge_prompt, redact_obj, summary_prompt)
 
 
 class OpenAICompatBackend:
@@ -93,6 +93,19 @@ class OpenAICompatBackend:
         # judge prompt scaffolding) must not have that leak printed as the
         # narrative. Reject it and return "" so the caller falls back to the
         # always-correct structured recap — the lite-tier output.
+        return out if _looks_like_summary(out) else ""
+
+    # --- investigate (scheduled audit review) ----------------------------
+    def investigate(self, facts: dict, signals: dict, *,
+                    timeout_ms: int = 30000) -> str:
+        out = self._chat(ANALYST_SYSTEM,
+                         analyst_prompt(redact_obj(facts), redact_obj(signals)),
+                         timeout_ms=timeout_ms, max_tokens=400, temperature=0.2)
+        out = (out or "").strip()
+        # Same fail-safe posture as summarize(): a judge-only fine-tune that
+        # ignores ANALYST_SYSTEM and echoes a verdict or judge scaffolding must
+        # not be printed as the analysis. Reject it; the caller keeps its
+        # deterministic report.
         return out if _looks_like_summary(out) else ""
 
 

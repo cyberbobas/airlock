@@ -700,6 +700,66 @@ def cmd_summary(a) -> int:
     return 0
 
 
+def cmd_analyze(a) -> int:
+    from . import analyst
+    an = analyst.analyze(a.window, use_ai=not a.no_ai)
+    text = analyst.render_markdown(an)
+    path = None
+    if a.save:
+        path = analyst.save(an, text)
+    if a.json:
+        out = {"severity": an.severity, "window_hours": an.window_hours,
+               "signals": an.signals, "narrative": an.narrative,
+               "report": str(path) if path else None}
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+    elif not a.quiet:
+        print(text)
+    if a.quiet and path:
+        print(str(path))
+    # exit non-zero on a suspicious window so a cron/CI wrapper can alert on it
+    return 2 if an.severity == "suspicious" else 0
+
+
+def cmd_watch(a) -> int:
+    from . import schedule
+    if a.uninstall:
+        ok, msg = schedule.uninstall()
+        print(("  ✓ " if ok else "  ✗ ") + msg)
+        return 0 if ok else 1
+    if a.status or (not a.install and not a.every):
+        st = schedule.status()
+        if st["installed"]:
+            print(f"  scheduled: airlock analyze every {st['interval']}")
+        else:
+            print("  no schedule installed  (airlock watch --install daily)")
+        if not st["cron_available"]:
+            print("  note: no crontab here — use `airlock watch --every <interval>`")
+        elif not st["cron_running"]:
+            print("  note: cron daemon not running — the schedule will not fire")
+        return 0
+    if a.install:
+        ok, msg = schedule.install(a.install)
+        print(("  ✓ " if ok else "  ✗ ") + msg)
+        return 0 if ok else 1
+    if a.every:
+        # foreground loop — for containers / boxes without cron, or a live watch
+        import time
+        from . import analyst
+        hours = analyst._hours(a.every)
+        print(f"  watching: analyze every {a.every} "
+              f"(≈{hours:.0f}h); Ctrl-C to stop")
+        try:
+            while True:
+                an = analyst.analyze(a.every, use_ai=not a.no_ai)
+                p = analyst.save(an)
+                print(f"  {time.strftime('%H:%M:%S')}  {an.severity:10} -> {p}")
+                time.sleep(max(hours * 3600, 60))
+        except KeyboardInterrupt:
+            print("\n  stopped.")
+        return 0
+    return 0
+
+
 def cmd_ai_status(a) -> int:
     from . import ai
     from .ai import builtin
@@ -1082,6 +1142,31 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--markdown", action="store_true")
     s.add_argument("--no-color", action="store_true")
     s.set_defaults(fn=cmd_summary)
+
+    s = sub.add_parser("analyze",
+                       help="security review of the audit log over a window")
+    s.add_argument("--window", default="day",
+                   help="6h | day | week | month, or e.g. 12h/3d/2w (default: day)")
+    s.add_argument("--save", action="store_true",
+                   help="write the report to $AIRLOCK_HOME/reports/")
+    s.add_argument("--no-ai", action="store_true",
+                   help="deterministic signals only, skip the model verdict")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--quiet", action="store_true",
+                   help="print only the saved report path (for cron)")
+    s.set_defaults(fn=cmd_analyze)
+
+    s = sub.add_parser("watch",
+                       help="schedule `airlock analyze` (6h/daily/weekly/monthly)")
+    s.add_argument("--install", metavar="INTERVAL",
+                   choices=["6h", "daily", "weekly", "monthly"],
+                   help="install a cron schedule at this interval")
+    s.add_argument("--uninstall", action="store_true", help="remove the schedule")
+    s.add_argument("--status", action="store_true", help="show the schedule")
+    s.add_argument("--every", metavar="INTERVAL",
+                   help="run a foreground loop at this interval (no cron)")
+    s.add_argument("--no-ai", action="store_true", help="skip the model verdict")
+    s.set_defaults(fn=cmd_watch)
 
     s = sub.add_parser("ai-status", help="which AI tier/model is active")
     s.set_defaults(fn=cmd_ai_status)
