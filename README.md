@@ -294,6 +294,8 @@ session, and a live feed where every entry carries the command and, for a block,
 the reason in red (`blocked: known exfil collector`). It draws on the alternate
 screen (like `htop`), so it never litters your scrollback.
 
+![airlock monitor — live dashboard with per-agent attribution](docs/airlock-monitor.png)
+
 **One gate, several agents — who did what.** When you run more than one agent
 behind Airlock, `airlock init` wires each one's hook stamped with its name
 (`airlock-hook --agent claude` / `--agent grok` / `--agent cursor`), so every
