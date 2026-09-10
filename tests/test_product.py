@@ -401,7 +401,7 @@ def main():
     emitted = []
     orig_emit, orig_cap = notify._emit, notify.CAP
     orig_cd, orig_win = notify.COOLDOWN, notify.WINDOW
-    notify._emit = lambda title, body: emitted.append((title, body))
+    notify._emit = lambda title, body, **kw: emitted.append((title, body))
     notify.CAP, notify.COOLDOWN, notify.WINDOW = 3, 100.0, 1000.0
     try:
         for i in range(12):                       # 12 DISTINCT blocks in a burst

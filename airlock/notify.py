@@ -114,14 +114,67 @@ def _spawn(argv: list[str]) -> None:
         pass
 
 
-def _emit(title: str, body: str) -> None:
+_ns_actions = None
+
+
+def _notify_send_has_actions() -> bool:
+    """notify-send gained --action/--wait in libnotify 0.8. Older ones ignore
+    them (and would show the literal flags), so probe once."""
+    global _ns_actions
+    if _ns_actions is None:
+        try:
+            h = subprocess.run(["notify-send", "--help"], capture_output=True,
+                               text=True, timeout=2).stdout
+            _ns_actions = ("--action" in h) and ("--wait" in h)
+        except Exception:
+            _ns_actions = False
+    return _ns_actions
+
+
+def _airlock_bin() -> str:
+    return shutil.which("airlock") or "airlock"
+
+
+def _emit(title: str, body: str, *, allow_cmd: str = "") -> None:
+    """Show the toast. If `allow_cmd` is given and the backend supports buttons,
+    add an 'Allow this' action that runs it on click; otherwise the command
+    stays in the body text as before. Always non-blocking (a detached helper
+    waits for the click, never the gate)."""
     b = _backend()
     if b == "notify-send":
+        if allow_cmd and _notify_send_has_actions():
+            # A detached helper shows the button and reacts to the click.
+            # notify-send --wait prints the chosen action key on stdout.
+            #   allow  -> run the allow command
+            #   report -> write `airlock report` to a file and open it in the
+            #             desktop's default viewer (a terminal is not assumed);
+            #             a second toast confirms where it went.
+            helper = (
+                'k=$("$0" --wait -u critical -a Airlock '
+                '--action=allow="Allow this" --action=report="Why?" '
+                '"$1" "$2"); '
+                'case "$k" in '
+                'allow) sh -c "$3" ;; '
+                'report) f="$HOME/.airlock/last-report.txt"; '
+                '  sh -c "$4" > "$f" 2>&1; '
+                '  (xdg-open "$f" >/dev/null 2>&1 || open "$f" >/dev/null 2>&1 '
+                '   || x-terminal-emulator -e "less $f" >/dev/null 2>&1 '
+                '   || "$0" -a Airlock "Airlock report saved" "$f") ;; '
+                'esac')
+            _spawn(["sh", "-c", helper, "notify-send", title, body,
+                    allow_cmd, f"{_airlock_bin()} report"])
+            return
         _spawn(["notify-send", "-u", "critical", "-a", "Airlock", title, body])
     elif b == "terminal-notifier":
-        _spawn(["terminal-notifier", "-title", title, "-message", body,
-                "-group", "airlock"])
+        argv = ["terminal-notifier", "-title", title, "-message", body,
+                "-group", "airlock"]
+        if allow_cmd:
+            # terminal-notifier runs -execute on click (whole notification).
+            argv += ["-actions", "Allow this", "-execute", allow_cmd]
+        _spawn(argv)
     elif b == "osascript":
+        # osascript's `display notification` has no buttons; keep it
+        # informational (the allow command is already in the body).
         safe = body.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " · ")
         _spawn(["osascript", "-e",
                 f'display notification "{safe}" with title "{title}"'])
@@ -148,6 +201,10 @@ def blocked(*, tool: str, reason: str, resource: str = "",
         if resource:
             body += f"\n{resource[:120]}"
         body += f"\n\nAllow it:  {fix}"
-        _emit("Airlock blocked a call", body)
+        # Pass the fix as a clickable action where the desktop supports buttons;
+        # it stays in the body text as a fallback for those that don't.
+        _emit("Airlock blocked a call", body,
+              allow_cmd=f"{_airlock_bin()} {fix.split(' ', 1)[1]}"
+              if fix.startswith("airlock ") else fix)
     except Exception:
         pass
