@@ -81,8 +81,10 @@ def _ensure_server(mf: Path, port: int) -> bool:
         pass
     try:
         subprocess.Popen(
-            [str(mf), "--server", "--host", "127.0.0.1", "--port", str(port),
-             "--nobrowser"],
+            # No --nobrowser: llamafile >= 0.10 removed it (--server is already
+            # headless) and hard-errors on an unknown flag, which would make the
+            # built-in backend silently unavailable on a current runtime.
+            [str(mf), "--server", "--host", "127.0.0.1", "--port", str(port)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
