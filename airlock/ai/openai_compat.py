@@ -87,15 +87,86 @@ class OpenAICompatBackend:
     def summarize(self, facts: dict, *, timeout_ms: int = 20000) -> str:
         out = self._chat(SUMMARY_SYSTEM, summary_prompt(redact_obj(facts)),
                          timeout_ms=timeout_ms, max_tokens=400, temperature=0.2)
-        return (out or "").strip()
+        out = (out or "").strip()
+        # Fail safe like the judge path: a model that answers off-task (a
+        # judge-only fine-tune ignores SUMMARY_SYSTEM and echoes a verdict or the
+        # judge prompt scaffolding) must not have that leak printed as the
+        # narrative. Reject it and return "" so the caller falls back to the
+        # always-correct structured recap — the lite-tier output.
+        return out if _looks_like_summary(out) else ""
 
 
-def _parse_verdict(text: str):
+def _echoes_judge_system(low: str) -> bool:
+    """True if `low` (already lowercased) reproduces the judge's own instructions.
+
+    The leak that actually reaches `airlock summary` is a judge-only model echoing
+    JUDGE_SYSTEM's *instructions* ("Decide exactly one of...", "Reply with a single
+    line of JSON", the literal enum `allow|block|ask`) — no JSON verdict, none of
+    the judge_prompt scaffolding markers. Rather than hard-code phrases that could
+    drift from the prompt, we detect a verbatim overlap with JUDGE_SYSTEM itself:
+
+      * the literal enum `allow|block|ask` — near-conclusive, no human narrative
+        writes the pipe-separated schema; or
+      * any 40-char span of JUDGE_SYSTEM appearing verbatim in the output — long
+        enough that a genuine narrative sharing a word like "untrusted networks"
+        never trips it, short enough to catch a partial echo.
+    """
+    if "allow|block|ask" in low:
+        return True
+    js = JUDGE_SYSTEM.lower()
+    W = 40
+    return any(js[i:i + W] in low for i in range(0, len(js) - W, 8))
+
+
+def _looks_like_summary(text: str) -> bool:
+    """True if `text` reads as a narrative summary, not a leaked judge answer.
+
+    A judge-only fine-tune ignores SUMMARY_SYSTEM and responds in its trained
+    shape. Two observed leak shapes, both rejected here:
+      A) an echo of the judge_prompt scaffolding (`tool:` / `server/plane:` /
+         `rules said:` / `why escalated:` lines), or a `{"decision": ...}` verdict;
+      B) an echo of JUDGE_SYSTEM's instructions — what the product actually emits.
+    We also reject anything too short to be the 4-8 sentence narrative
+    SUMMARY_SYSTEM asks for, so the caller degrades to the structured recap
+    instead of printing the leak. A narrative that merely says "blocked"/"allowed"
+    stays safe.
+    """
+    if not text or len(text.strip()) < 40:
+        return False
+    # A structured judge verdict is the clearest tell. Check only for an actual
+    # {"decision": "allow|block|ask"} JSON object — NOT _parse_verdict, whose
+    # bare-keyword fallback would fire on a real summary (which naturally says
+    # "blocked"/"allowed").
+    if _has_verdict_json(text):
+        return False
+    low = text.lower()
+    scaffold = ("rules said:", "why escalated:", "server/plane:")
+    if any(marker in low for marker in scaffold):
+        return False
+    if low.lstrip().startswith("tool:"):
+        return False
+    if _echoes_judge_system(low):        # shape B — the one the product emits
+        return False
+    return True
+
+
+def _has_verdict_json(text: str) -> bool:
+    """True if `text` contains a real {"decision": "allow|block|ask"} object.
+
+    The narrow, keyword-free half of `_parse_verdict`: used by the summary path
+    to spot a leaked judge answer without tripping on a narrative that merely
+    says "blocked"/"allowed" in prose.
+    """
+    return _parse_verdict(text, allow_keyword=False) is not None
+
+
+def _parse_verdict(text: str, *, allow_keyword: bool = True):
     """Extract (decision, reason) from a model reply. None if unusable.
 
     Tolerant of models that wrap JSON in prose or code fences. If it cannot find
     a clean verdict it returns None so the caller fails closed rather than
-    guessing an allow.
+    guessing an allow. `allow_keyword=False` restricts to a structured JSON
+    verdict (no bare-word fallback) — for callers that only want the strong tell.
     """
     text = text.strip()
     # 1) first {...} block that parses as JSON
@@ -118,6 +189,8 @@ def _parse_verdict(text: str):
         except Exception:
             pass
         start = text.find("{", start + 1)
+    if not allow_keyword:
+        return None
     # 2) bare keyword fallback, strictest wins if several appear
     low = text.lower()
     for dec in ("block", "ask", "allow"):   # block first: safest to honor

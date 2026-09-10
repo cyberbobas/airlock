@@ -178,8 +178,8 @@ def main():
     srv2, port2 = _start_stub()
     be = OpenAICompatBackend(base_url=f"http://127.0.0.1:{port2}/v1", model="x", source="mini")
 
-    class Std:  # standard tier, default judge config
-        tier = "standard"; cloud = "off"; ai = {}
+    class Std:  # standard tier; cache off so each consult re-asks the mutable stub
+        tier = "standard"; cloud = "off"; ai = {"judge": {"cache_ttl_ms": 0}}
 
     class Lite:
         tier = "lite"; cloud = "off"; ai = {}
@@ -196,7 +196,7 @@ def main():
             aijudge.consult(Decision(ALLOW, "ok", 1), tool="Bash", cfg=Std(), backend=be).action == ALLOW)
 
     class StdCheckAllow:
-        tier = "standard"; cloud = "off"; ai = {"judge": {"check_allow": True}}
+        tier = "standard"; cloud = "off"; ai = {"judge": {"check_allow": True, "cache_ttl_ms": 0}}
     s.check("check_allow lets the judge tighten an allow -> block",
             aijudge.consult(Decision(ALLOW, "ok", 1), tool="Bash", cfg=StdCheckAllow(), backend=be).action == BLOCK)
 
@@ -205,14 +205,55 @@ def main():
             aijudge.consult(Decision(ASK, "gray", None), tool="Bash", cfg=Std(), backend=be).action == ASK)
 
     class StdRelax:
-        tier = "standard"; cloud = "off"; ai = {"judge": {"relax_ask": True}}
+        tier = "standard"; cloud = "off"; ai = {"judge": {"relax_ask": True, "cache_ttl_ms": 0}}
     s.check("relax_ask opt-in allows ask -> allow",
             aijudge.consult(Decision(ASK, "gray", None), tool="Bash", cfg=StdRelax(), backend=be).action == ALLOW)
     srv2.shutdown()
 
+    # ---- verdict cache: keyed on the full context, invalidated on digest ---
+    class _Counting:
+        local = True; model = "cacheM"
+        def __init__(self): self.calls = 0
+        def available(self): return True
+        def judge(self, ctx, *, timeout_ms):
+            self.calls += 1
+            return base.Verdict(decision="block", reason="x", source="mini")
+    class StdCache:
+        tier = "standard"; cloud = "off"; digest = "D1"; ai = {"judge": {"cache_ttl_ms": 300000}}
+    aijudge._verdict_cache.clear()
+    cb = _Counting()
+    def _cc(cmd, cfg):
+        return aijudge.consult(Decision(ASK, "g", None), tool="Bash", args={"command": cmd},
+                               server="s", plane="mcp", cfg=cfg, backend=cb)
+    _cc("systemctl stop firewalld", StdCache()); _cc("systemctl stop firewalld", StdCache())
+    s.check("verdict cache serves a repeated identical call without re-asking", cb.calls == 1)
+    _cc("iptables -F", StdCache())
+    s.check("different args miss the cache (key is not the tool name alone)", cb.calls == 2)
+    class StdCache2:
+        tier = "standard"; cloud = "off"; digest = "D2"; ai = {"judge": {"cache_ttl_ms": 300000}}
+    _cc("systemctl stop firewalld", StdCache2())
+    s.check("a policy-digest change invalidates cached verdicts", cb.calls == 3)
+
     dead = OpenAICompatBackend(base_url="http://127.0.0.1:1/v1", model="x", source="mini")
-    s.check("model unreachable -> rules decision stands (fail-safe)",
-            aijudge.consult(Decision(ASK, "gray", None), tool="Bash", cfg=Std(), backend=dead).action == ASK)
+    # A no-op judge (timeout/unreachable) must fail safe AND leave a trace: on
+    # CPU-only hardware the judge times out on every call, and before this it did
+    # so silently. Isolate AIRLOCK_HOME so we read only this call's records.
+    from airlock import audit
+    _noop_home = tempfile.mkdtemp(prefix="airlock-noop-")
+    _old_home = os.environ.get("AIRLOCK_HOME")
+    os.environ["AIRLOCK_HOME"] = _noop_home
+    try:
+        stood = aijudge.consult(Decision(ASK, "gray", None), tool="Bash", cfg=Std(), backend=dead)
+        _ap = audit.audit_path()
+        _recs = [json.loads(l) for l in open(_ap) if l.strip()] if _ap.exists() else []
+    finally:
+        if _old_home is None:
+            os.environ.pop("AIRLOCK_HOME", None)
+        else:
+            os.environ["AIRLOCK_HOME"] = _old_home
+    s.check("model unreachable -> rules decision stands (fail-safe)", stood.action == ASK)
+    s.check("judge no-op (timeout/unreachable) is audited, not silent",
+            any(r.get("event") == "judge_noop" for r in _recs))
 
     # ---- M4: providers, cloud gating, keychain, Anthropic ---------------
     from airlock.ai import providers, keys
@@ -305,9 +346,17 @@ def main():
     # ---- judge latency budget scales with local vs cloud ----------------
     class CloudCfg:
         tier = "pro"; cloud = "on"; ai = {}
-    s.check("local judge budget is short (hot path)", aijudge._cfg(CloudCfg(), local=True)["budget"] == 800)
-    s.check("cloud judge budget is longer so it actually runs",
-            aijudge._cfg(CloudCfg(), local=False)["budget"] > 800)
+    # Local default is 3000ms: a 3B Q4 llamafile on CPU-only hardware (llamafile's
+    # target) takes ~1.1s/call; the old 800ms ceiling made the judge time out and
+    # silently no-op for the modal user. Still bounded, and below the cloud budget.
+    _local = aijudge._cfg(CloudCfg(), local=True)["budget"]
+    _cloud = aijudge._cfg(CloudCfg(), local=False)["budget"]
+    s.check("local judge budget clears CPU latency but stays bounded (3000ms)", _local == 3000)
+    s.check("cloud judge budget is longer so a cloud judge actually runs", _cloud > _local)
+    s.check("explicit latency_budget_ms overrides the default",
+            aijudge._cfg(type("C", (), {"tier": "standard", "cloud": "off",
+                                        "ai": {"judge": {"latency_budget_ms": 1500}}})(),
+                         local=True)["budget"] == 1500)
 
     # ---- menu: informative, grouped, explains the AI ---------------------
     help_text = cli.build_parser().format_help()

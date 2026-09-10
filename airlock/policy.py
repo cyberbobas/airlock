@@ -205,6 +205,10 @@ class Policy:
             cloud=str(data.get("cloud") or "off").lower(),
         )
         pol.mode = os.environ.get("AIRLOCK_MODE", data.get("mode", GUARD)).lower()
+        # opt-in: turn a curated set of inert shell commands into `allow` so
+        # guard mode stops prompting on `git status` / `ls` etc. Default off, so
+        # a policy that does not mention it keeps the ask-everything behavior.
+        pol.allow_benign = bool(data.get("allow_benign_reads", False))
         pol.validate()
         return pol
 
@@ -309,6 +313,13 @@ class Policy:
         g = self._match_grant(tool, normalize(primary))
         if g is not None:
             return g
+
+        # 2.5 opt-in benign allowlist: a curated inert command (git status, ls…)
+        # becomes `allow` here — AFTER the block sweep, so it can never expose a
+        # secret or a dangerous string, and never for a command that could chain.
+        if getattr(self, "allow_benign", False) and tool == "Bash":
+            if is_benign_command(str(args.get("command") or "")):
+                return Decision(ALLOW, "read-only / inert command", None)
 
         # 3. the rule list, first match wins; 4. the default
         return self._match(tool, normalize(primary), identified=identified)
@@ -538,6 +549,119 @@ def _glob(text: str, pat: str) -> bool:
     if not any(c in pat for c in "*?[]"):
         return pat in text
     return fnmatch.fnmatch(text, pat)
+
+
+# --- benign read-only allowlist (opt-in, guard-mode noise reduction) --------
+# In guard mode every shell call defaults to `ask`, so inert commands like
+# `git status` prompt a human on every run. This allowlist turns a SMALL,
+# curated set of read-only / no-side-effect commands into `allow` — but only
+# ever AFTER the absolute-block sweep has run, so it can never expose a secret
+# path or a dangerous string (those are already blocked). It is deliberately
+# NOT expressible in the rule YAML: a no-wildcard `match:` there is a SUBSTRING
+# test, so `match: "git status"` would also allow `git status; rm -rf /`. Here we
+# parse exactly and reject anything that could chain, substitute, or redirect.
+#
+# Excluded on purpose: grep/find/cat/head/tail (read arbitrary paths — a silent
+# secret-read channel), pytest/python/make/sh (execute arbitrary code), env/
+# printenv (leak tokens), git config/push/pull/remote (mutate / egress / read
+# credentials). Whatever is not on the tight lists below simply keeps asking.
+# Reject these outright. Shell metacharacters (chaining/subst/redirect/glob), the
+# history bang, plus: QUOTES — the shell strips them but our tokenizer would not,
+# so `ls "/etc"` would evade the outside-path check; and VERTICAL TAB / FORM FEED
+# — str.split() treats them as separators but the shell's default IFS does not, so
+# our token view could disagree with what actually runs. Backslash and CR/LF too.
+_BENIGN_META = set(";|&$`<>(){}[]*?!") | set("\"'") | {"\\", "\n", "\r", "\x0b", "\x0c"}
+# Binaries that are read-only for EVERY argument vector — none of them has a flag
+# that writes a file, mutates host state, or reads an arbitrary path. Excluded on
+# purpose: `date` (has -s/--set to set the clock) and `hostname` (a positional arg
+# sets the name) are handled specially below; anything not listed keeps asking.
+#
+# ADDING A BINARY HERE IS A SECURITY DECISION, NOT A CONVENIENCE ONE. "It's
+# read-only" was the assumption that turned out wrong three separate times during
+# review: grep/find read arbitrary paths, `git status` executes code via a repo's
+# core.fsmonitor, and `date -f` dumps a file through its error output. Before
+# adding one, enumerate what EVERY flag and config knob it honors can do — write,
+# exec, read outside the tree — the way git was audited out. When unsure, leave it
+# off: an un-listed command merely asks; a wrongly-listed one is a silent bypass.
+_BENIGN_BIN = {
+    "ls", "pwd", "whoami", "id", "groups", "uname", "arch", "tty",
+    "df", "free", "nproc", "uptime",
+}
+# git is DELIBERATELY not auto-allowed. Even the safest-looking verb runs code
+# defined by the repository's own .git/config: `core.fsmonitor` executes on
+# `git status` and `git diff`, `diff.external` / `*.textconv` on the diff verbs,
+# and there are more (core.pager, core.hooksPath, filter.*.process, sshCommand…).
+# A repo delivered as a tarball/zip, or already on disk, can ship a hostile
+# config (git clone does not import it, but that is only one delivery path).
+# Verified: `git status` in such a repo executes the configured program. There is
+# no safe subset and no metacharacter to catch, so git always falls through to
+# `ask` — the human sees it — rather than the allowlist waving it past.
+
+
+def _names_outside_path(tok: str) -> bool:
+    """True if an argument reaches for a path outside the workspace.
+
+    The load-bearing guard, stronger than any flag list: an allowlisted command
+    may only touch relative, in-tree paths. This alone kills `--no-index` reads of
+    an absolute path, recursive listing of an absolute directory, and `~`-rooted
+    reads, without depending on the secrets list enumerating every sensitive path.
+    A git ref like `HEAD~1` or a range `a..b` is NOT a path (tilde/dots not at the
+    start, no slash), so it still passes. The value side of a flag is inspected
+    too, in every spelling an option can carry a path: `--file=/etc/passwd`
+    (after `=`), `-f/etc/passwd` (attached to a short option), and the plain token.
+    A relative in-tree path like `src/app.py` is fine — its slash is not leading.
+    """
+    def _outside(s: str) -> bool:
+        return (s.startswith("/") or s.startswith("~") or s.startswith("..")
+                or "/.." in s or "../" in s)
+
+    if _outside(tok):
+        return True
+    # value after '=' — `--file=/etc/passwd`
+    if "=" in tok and _outside(tok.split("=", 1)[1]):
+        return True
+    # value attached to a flag in any spelling — `-f/etc/passwd`, `-f~/x`. For a
+    # flag token, test from the first '/' or '~' onward; keying on the leading '-'
+    # keeps ordinary relative positionals (`ls src/foo`) working.
+    if tok.startswith("-"):
+        for i, ch in enumerate(tok):
+            if ch in "/~":
+                return _outside(tok[i:])
+    return False
+
+
+def is_benign_command(command: str) -> bool:
+    """True only for a command that is inert for its WHOLE argument vector.
+
+    Conservative by construction: any shell metacharacter disqualifies the
+    command; any argument naming a path outside the workspace disqualifies it;
+    only curated read-only binaries qualify (git is excluded — see above — because
+    its exec surface is repo-config driven, not verb driven); and the binaries
+    with a mutating flag (date, hostname) are special-cased. A disqualified
+    command falls through to the normal `ask`.
+    """
+    if not command or not command.strip():
+        return False
+    if any(ch in command for ch in _BENIGN_META):
+        return False
+    toks = command.split()
+    if not toks:
+        return False
+    b = toks[0]
+    if any(_names_outside_path(t) for t in toks[1:]):
+        return False                      # no path outside the workspace, ever
+    if b == "date":
+        # `date +%F` is read-only; `-s`/`--set` sets the system clock, and
+        # `-f`/`--file` turns date into an arbitrary file reader (it echoes every
+        # unparseable line back as an error). The =VALUE path check already blocks
+        # an absolute --file target; reject the flag outright so even a relative
+        # one does not use date as a read channel.
+        return not any(t in ("-s", "-f") or t.startswith("--set")
+                       or t.startswith("--file") for t in toks[1:])
+    if b == "hostname":
+        # bare `hostname` reads; `hostname NAME` sets it.
+        return len(toks) == 1
+    return b in _BENIGN_BIN
 
 
 def _today() -> str:
