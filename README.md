@@ -68,9 +68,57 @@ Then:
 
 ```bash
 airlock demo                    # watch it stop a key-theft (nothing of yours touched)
-airlock init                    # wire the hook, wrap every agent's MCP servers
+airlock setup                   # guided install — pick exactly the build you want
 airlock doctor                  # confirm what is actually enforcing
 ```
+
+### Pick your build — `airlock setup`
+
+The wizard walks you through it and installs **only what you choose** — nothing
+is pulled behind your back (the ~2 GB judge model is downloaded only if you say
+yes). It asks four things: posture, AI tier, (for pro) your model, and whether
+to schedule reviews.
+
+**Three AI tiers — including "no AI at all":**
+
+| tier | what runs | downloads |
+|---|---|---|
+| **lite** | just the firewall — rules, log, allow/ask/block. **No model.** | nothing |
+| **standard** | + the built-in offline judge & summaries (local 3B llamafile) | ~2 GB model, only if you accept |
+| **pro** | standard + **bring your own model** (Claude, OpenAI, Ollama, …) | your call |
+
+`airlock init` never touches the model; it sets the tier and, for standard/pro,
+tells you to install the model when you want it. So **lite is a pure,
+dependency-light firewall** — pick it in `setup`, or `airlock ai-tier lite`.
+
+**Get the built-in model (standard tier):**
+
+```bash
+airlock ai-model --release      # download + verify the shipped judge from GitHub
+airlock ai-tier standard
+airlock ai-status               # backend: available
+```
+
+**Bring your own model (pro tier).** The pro tier points the judge and the
+log-analyst at a bigger/smarter model than the built-in 3B — a cloud model or a
+local one. Cloud is **off by default** and must be turned on explicitly; local
+models (Ollama, any localhost endpoint) need no key and never leave the machine:
+
+```bash
+airlock ai-tier pro
+# a cloud model — key lives in the OS keychain, never in the policy file:
+airlock ai-provider claude --cloud on     # or openai / deepseek / qwen / kimi / glm
+airlock ai-key --provider claude          # paste your key (stored in the keychain)
+# …or a local model, no key, nothing leaves the box:
+airlock ai-provider ollama                # base_url http://localhost:11434/v1
+airlock ai-status
+```
+
+Presets (`claude`, `openai`, `deepseek`, `qwen`, `kimi`, `glm`, `ollama`,
+`custom`) just prefill the base URL and a default model id; override with
+`--model` / `--base-url`. `cloud: locked-off` in the policy hard-disables all
+cloud egress — nothing can ever turn it on. Whatever the model, the safety rules
+are identical: it only ever **tightens** a decision and **fails safe**.
 
 `airlock init` backs up every file it edits and marks every line it adds.
 `airlock uninstall` removes exactly those lines and restores the original file

@@ -417,6 +417,126 @@ def cmd_doctor(a) -> int:
     return 1 if any(k == "bad" for k, _ in rows) else 0
 
 
+def _ask(prompt: str, default: str = "") -> str:
+    try:
+        ans = input(f"  {prompt} ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return default
+    return ans or default
+
+
+def _yn(prompt: str, default_yes: bool = False) -> bool:
+    d = "Y/n" if default_yes else "y/N"
+    ans = _ask(f"{prompt} [{d}]:", "y" if default_yes else "n").lower()
+    return ans in ("y", "yes")
+
+
+def cmd_setup(a) -> int:
+    """Guided install — pick exactly the build you want, step by step."""
+    C = _C
+    if not sys.stdin.isatty():
+        print("  setup is interactive; run it in a terminal, or use "
+              "`airlock init --profile <p> --tier <t>` non-interactively.")
+        return 1
+    print(f"\n  {C['b']}Airlock setup{C['0']}  {C['d']}— a few questions, "
+          f"then you're protected. Ctrl-C to bail.{C['0']}\n")
+
+    # 1. posture
+    print(f"  {C['b']}1) Posture{C['0']}")
+    print(f"    {C['d']}default   block the clearly dangerous, stay out of the way (recommended)")
+    print(f"    paranoid  ask about far more")
+    print(f"    yolo      observe only — block nothing, just learn{C['0']}")
+    profile = _ask("profile [default]:", "default")
+    if profile not in ("default", "paranoid", "yolo"):
+        profile = "default"
+
+    # 2. AI tier
+    print(f"\n  {C['b']}2) AI in the Middle{C['0']}  {C['d']}(the gray-zone judge){C['0']}")
+    print(f"    {C['d']}[1] lite      just the firewall — no model, nothing to download")
+    print(f"    [2] standard  built-in offline judge (~2 GB, runs locally)  (recommended)")
+    print(f"    [3] pro       standard + bring your own model (Claude / OpenAI / Ollama…){C['0']}")
+    tier = {"1": "lite", "2": "standard", "3": "pro", "": "standard"}.get(
+        _ask("choose 1/2/3 [2]:", "2"), "standard")
+
+    # wire everything for the chosen profile (hook + MCP), writes the policy
+    _merge_mcp_configs(getattr(a, "mcp_config", None))
+    res = install.init(profile, project=config.workspace(),
+                       hook=not a.no_hook, mcp=not a.no_mcp)
+    up = config.user_policy()
+    _write_tier(up, tier)
+    print(f"\n  {C['l']}✓{C['0']} profile {profile}, tier {tier}")
+    for c in res.changes:
+        print(f"  {C['l']}✓{C['0']} {c.what}  {C['d']}{c.path}{C['0']}")
+
+    # 3. the model / provider
+    from .ai import builtin
+    if tier in ("standard", "pro"):
+        if builtin.model_path() is None:
+            if _yn("Download the built-in judge model now (~2 GB, offline after)?",
+                   default_yes=(tier == "standard")):
+                d = builtin.models_dir(); d.mkdir(parents=True, exist_ok=True)
+                ok, msg = _download_release_model(d / "airlock-judge.llamafile")
+                print(f"  {C['l'] if ok else C['h']}{'✓' if ok else '✗'}{C['0']} {msg}")
+            else:
+                print(f"  {C['d']}skipped — install later: airlock ai-model --release{C['0']}")
+    if tier == "pro":
+        print(f"\n  {C['b']}3) Your model{C['0']}  {C['d']}(pro tier){C['0']}")
+        print(f"    {C['d']}claude · openai · deepseek · qwen · kimi · glm · ollama · custom{C['0']}")
+        preset = _ask("provider (blank to use the built-in for now):", "").lower()
+        if preset:
+            from .ai import keys, providers
+            if preset not in providers.PRESETS:
+                print(f"  {C['m']}!{C['0']} unknown provider — skipping (airlock ai-provider later)")
+            else:
+                spec = providers.PRESETS[preset]
+                _set_provider(up, preset, cloud=("on" if not spec["local"] else None))
+                print(f"  {C['l']}✓{C['0']} provider {preset}"
+                      + ("" if spec["local"] else "  (cloud egress: on)"))
+                if not spec["local"]:
+                    key = _ask(f"paste your {preset} API key (stored in the OS keychain, "
+                               f"blank to skip):", "")
+                    if key:
+                        keys.set_key(preset, key)
+                        print(f"  {C['l']}✓{C['0']} key stored for {preset}")
+                    else:
+                        print(f"  {C['d']}skipped — add later: airlock ai-key --provider {preset}{C['0']}")
+
+    # 4. scheduled review
+    print(f"\n  {C['b']}4) Scheduled review{C['0']}  {C['d']}(read the log for you, save reports){C['0']}")
+    when = _ask("auto-review every [none/6h/daily/weekly/monthly] (none):", "none").lower()
+    if when in ("6h", "daily", "weekly", "monthly"):
+        from . import schedule
+        ok, msg = schedule.install(when)
+        print(f"  {C['l'] if ok else C['h']}{'✓' if ok else '✗'}{C['0']} {msg}")
+
+    # 5. show the result
+    print(f"\n  {C['b']}Done.{C['0']} {C['d']}Restart your agent so the hook loads.{C['0']}\n")
+    audit.record("setup", source="cli", effective="admit",
+                 reason=f"profile={profile} tier={tier}")
+    try:
+        return cmd_status(a)
+    except Exception:
+        return 0
+
+
+def _set_provider(policy_path, preset: str, *, cloud=None) -> None:
+    """Write ai.provider (+ optional cloud) into the user policy, validated."""
+    import yaml
+    data = yaml.safe_load(policy_path.read_text(encoding="utf-8")) or {}
+    ai = data.get("ai") if isinstance(data.get("ai"), dict) else {}
+    ai["provider"] = {"preset": preset}
+    data["ai"] = ai
+    if cloud:
+        data["cloud"] = cloud
+    old = policy_path.read_text(encoding="utf-8")
+    policy_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    try:
+        Policy.load(policy_path)
+    except Exception:
+        policy_path.write_text(old, encoding="utf-8")
+
+
 def cmd_init(a) -> int:
     _merge_mcp_configs(getattr(a, "mcp_config", None))
     res = install.init(a.profile, hook=not a.no_hook, mcp=not a.no_mcp,
@@ -1059,7 +1179,7 @@ def cmd_ai_model(a) -> int:
     import shutil
     from .ai import builtin
     d = builtin.models_dir()
-    if not a.path and not a.url:
+    if not a.path and not a.url and not getattr(a, "release", False):
         mp = builtin.model_path()
         if mp:
             sz = mp.stat().st_size / (1024 * 1024)
@@ -1071,6 +1191,11 @@ def cmd_ai_model(a) -> int:
     dest = d / "airlock-judge.llamafile"
     if a.path:
         shutil.copyfile(a.path, dest)
+    elif getattr(a, "release", False):
+        ok, msg = _download_release_model(dest)
+        print(f"  {msg}")
+        if not ok:
+            return 1
     else:
         import urllib.request
         print(f"downloading {a.url} …")
@@ -1081,6 +1206,58 @@ def cmd_ai_model(a) -> int:
         pass
     print(f"installed model at {dest}")
     return 0
+
+
+# The shipped judge model, split across two release assets (>2 GiB limit).
+_RELEASE_BASE = ("https://github.com/cyberbobas/airlock/releases/download/"
+                 "judge-v3-seed")
+_RELEASE_PARTS = ["airlock-judge-v3-seed.llamafile.part00",
+                  "airlock-judge-v3-seed.llamafile.part01"]
+_RELEASE_SHA256 = "a930a109ee53a4f3b2954af0904407a5f0ad5d61e83b9176e2e0eb9d3a346fef"
+
+
+def _download_release_model(dest) -> tuple[bool, str]:
+    """Fetch the built-in judge (two parts), reassemble, verify sha256."""
+    import hashlib
+    import urllib.request
+    from pathlib import Path
+    dest = Path(dest)
+    h = hashlib.sha256()
+    try:
+        with open(dest, "wb") as out:
+            for i, part in enumerate(_RELEASE_PARTS, 1):
+                url = f"{_RELEASE_BASE}/{part}"
+                print(f"  downloading part {i}/{len(_RELEASE_PARTS)} … "
+                      f"{_C['d']}{url}{_C['0']}")
+                with urllib.request.urlopen(url) as r:
+                    expect = int(r.headers.get("Content-Length") or 0)
+                    got = 0
+                    while True:
+                        chunk = r.read(1 << 20)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        h.update(chunk)
+                        got += len(chunk)
+                # A flaky connection can end a stream early; urllib does not
+                # check. Catch a short part here with a clear message instead of
+                # a puzzling sha mismatch at the end.
+                if expect and got != expect:
+                    raise IOError(f"part {i} truncated: got {got} of {expect} bytes")
+    except Exception as e:
+        try:
+            dest.unlink()
+        except OSError:
+            pass
+        return False, f"download failed ({e}) — nothing installed, try again"
+    got = h.hexdigest()
+    if got != _RELEASE_SHA256:
+        try:
+            dest.unlink()
+        except OSError:
+            pass
+        return False, f"sha256 mismatch ({got[:12]}… ≠ expected) — discarded"
+    return True, f"downloaded and verified ({dest.stat().st_size // (1024*1024)} MB)"
 
 
 def cmd_bench(a) -> int:
@@ -1212,6 +1389,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("-f", "--follow", action="store_true")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_log)
+
+    s = sub.add_parser("setup", help="guided install — pick exactly the build you want")
+    s.add_argument("--no-hook", action="store_true", help="skip the Claude Code hook")
+    s.add_argument("--no-mcp", action="store_true", help="skip wrapping MCP servers")
+    s.add_argument("--mcp-config", action="append", metavar="PATH",
+                   help="also gate this MCP config file (repeatable)")
+    s.set_defaults(fn=cmd_setup)
 
     s = sub.add_parser("init", help="wire Airlock into this machine")
     s.add_argument("--profile", default=config.DEFAULT_PROFILE,
@@ -1356,6 +1540,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("ai-model", help="install or show the built-in model (llamafile)")
     s.add_argument("--path", help="copy a local .llamafile into place")
     s.add_argument("--url", help="download a .llamafile from a URL")
+    s.add_argument("--release", action="store_true",
+                   help="download the shipped judge model from the GitHub release")
     s.set_defaults(fn=cmd_ai_model)
 
     s = sub.add_parser("bench", help="measured overhead per call")
