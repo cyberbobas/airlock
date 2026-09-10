@@ -74,15 +74,19 @@ def _console_script(name: str) -> str | None:
     return None
 
 
-def hook_command() -> str:
-    """The command to put in settings.json."""
+def hook_command(agent: str = "") -> str:
+    """The command to put in an agent's hook config.
+
+    `agent` names which agent this gate sits in front of (claude / grok / ...);
+    baked into the command as `--agent <name>` so one gate in front of several
+    agents attributes each call to the agent that made it."""
     exe = _console_script("airlock-hook")
     if exe:
-        return exe
-    exe = _console_script("airlock")
-    if exe:
-        return f"{exe} hook"
-    return f"{sys.executable} -m airlock.cc_hook"
+        base = exe
+    else:
+        exe = _console_script("airlock")
+        base = f"{exe} hook" if exe else f"{sys.executable} -m airlock.cc_hook"
+    return f"{base} --agent {agent}" if agent else base
 
 
 def mcp_command() -> list[str]:
@@ -193,8 +197,8 @@ def claude_settings() -> Path:
                                Path.home() / ".claude" / "settings.json"))
 
 
-def _hook_entry(event: str = "PreToolUse") -> dict:
-    cmd = hook_command()
+def _hook_entry(event: str = "PreToolUse", agent: str = "") -> dict:
+    cmd = hook_command(agent)
     if event == "PostToolUse":
         cmd += " --post"
     return {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}
@@ -243,8 +247,8 @@ def _is_airlock_hook(entry: dict) -> bool:
     return False
 
 
-def install_hook(res: Result) -> None:
-    p = claude_settings()
+def install_hook(res: Result, agent: str = "claude", path: Path = None) -> None:
+    p = path or claude_settings()
     data = _load_json(p)
     hooks = data.setdefault("hooks", {})
     changed = False
@@ -253,17 +257,17 @@ def install_hook(res: Result) -> None:
         if any(_is_airlock_hook(g) for g in groups):
             res.note(f"{event} hook already wired in {p}")
             continue
-        groups.append(_hook_entry(event))
+        groups.append(_hook_entry(event, agent))
         changed = True
     if not changed:
         return
     b = _backup(p)
     _save_json(p, data)
-    res.add(p, f"PreToolUse + PostToolUse hooks -> {hook_command()}", b or "")
+    res.add(p, f"PreToolUse + PostToolUse hooks -> {hook_command(agent)}", b or "")
 
 
-def remove_hook(res: Result) -> None:
-    p = claude_settings()
+def remove_hook(res: Result, path: Path = None) -> None:
+    p = path or claude_settings()
     if not p.exists():
         return
     data = _load_json(p)
@@ -288,6 +292,82 @@ def remove_hook(res: Result) -> None:
                    f"{'y' if removed == 1 else 'ies'}"
                    + (" (original file restored byte-for-byte)" if exact else ""),
                 b or "")
+
+
+# ---- grok / TOML-config hook -------------------------------------------
+# grok keeps hooks in config.toml (`[[hooks.<Event>]]`). It ALSO reads
+# ~/.claude/settings.json as a compat hook source, so a claude-labelled hook
+# there would fire for grok too and mis-attribute grok's calls to claude — we
+# disable that compat scan in grok's own config when we wire grok's own hook.
+_TOML_BEGIN = "# >>> airlock hook (managed by `airlock init`) >>>"
+_TOML_END = "# <<< airlock hook <<<"
+
+
+def _toml_hook_block(agent: str) -> str:
+    pre, post = hook_command(agent), hook_command(agent) + " --post"
+    return (
+        f"\n{_TOML_BEGIN}\n"
+        "# Airlock only runs its own gate for this agent; the claude/cursor\n"
+        "# compat hook sources are turned off so a call is attributed once.\n"
+        "[compat.claude]\nhooks = false\n"
+        "[compat.cursor]\nhooks = false\n"
+        "[[hooks.PreToolUse]]\n"
+        '  [[hooks.PreToolUse.hooks]]\n'
+        '  type = "command"\n'
+        f'  command = "{pre}"\n'
+        "  timeout = 10\n"
+        "[[hooks.PostToolUse]]\n"
+        '  [[hooks.PostToolUse.hooks]]\n'
+        '  type = "command"\n'
+        f'  command = "{post}"\n'
+        "  timeout = 10\n"
+        f"{_TOML_END}\n"
+    )
+
+
+def install_toml_hook(res: Result, path: Path, agent: str) -> None:
+    """Append the PreToolUse/PostToolUse gate to a grok-style config.toml."""
+    if not path.exists():
+        return
+    text = path.read_text(encoding="utf-8")
+    if _TOML_BEGIN in text or "airlock-hook" in text or "airlock.cc_hook" in text:
+        res.note(f"hook already wired in {path}")
+        return
+    # A pre-existing [compat.claude]/[compat.cursor] table would clash with the
+    # ones we add — skip ours if the user already declared them.
+    block = _toml_hook_block(agent)
+    if "[compat.claude]" in text:
+        block = block.replace("[compat.claude]\nhooks = false\n", "")
+    if "[compat.cursor]" in text:
+        block = block.replace("[compat.cursor]\nhooks = false\n", "")
+    b = _backup(path)
+    path.write_text(text.rstrip("\n") + "\n" + block, encoding="utf-8")
+    res.add(path, f"PreToolUse + PostToolUse hooks -> {hook_command(agent)}", b or "")
+
+
+def remove_toml_hook(res: Result, path: Path) -> None:
+    if not path.exists():
+        return
+    text = path.read_text(encoding="utf-8")
+    if _TOML_BEGIN not in text:
+        return
+    start = text.index(_TOML_BEGIN)
+    end = text.index(_TOML_END) + len(_TOML_END)
+    new = (text[:start].rstrip("\n") + "\n" + text[end:].lstrip("\n")).rstrip("\n") + "\n"
+    b = _backup(path)
+    path.write_text(new, encoding="utf-8")
+    res.add(path, "removed the Airlock hook block", b or "")
+
+
+def hook_targets(home: Path) -> list:
+    """(agent, config_path, format) for every agent on this box that takes a
+    PreToolUse hook. Only agents whose config actually exists are wired, except
+    Claude Code, which `init` sets up even on a fresh box."""
+    return [
+        ("claude", claude_settings(), "json"),
+        ("grok", home / ".grok" / "config.toml", "toml"),
+        ("cursor", home / ".cursor" / "hooks.json", "json"),
+    ]
 
 
 # ---- MCP config stores -------------------------------------------------
@@ -784,7 +864,19 @@ def init(profile: str = config.DEFAULT_PROFILE, *, project: Path | None = None,
     res = Result()
     install_policy(profile, res, force=force)
     if hook:
-        install_hook(res)
+        # Wire a PreToolUse/PostToolUse gate into every agent on this box, each
+        # stamped with its own name so one gate in front of several agents says
+        # WHOSE call it blocked (`airlock monitor` groups by agent). Claude Code
+        # is set up even on a fresh box; other agents only if their config exists.
+        for agent, path, fmt in hook_targets(Path.home()):
+            if agent == "claude":
+                install_hook(res, agent="claude", path=path)
+            elif not path.exists():
+                continue
+            elif fmt == "toml":
+                install_toml_hook(res, path, agent)
+            else:
+                install_hook(res, agent=agent, path=path)
     if mcp:
         project = project or config.workspace()
         stores = mcp_stores(project)
@@ -815,7 +907,15 @@ def fix(*, project: Path | None = None) -> Result:
     `airlock init` owns that, and doctor already reports a missing one.
     """
     res = Result()
-    install_hook(res)
+    for agent, path, fmt in hook_targets(Path.home()):
+        if agent == "claude":
+            install_hook(res, agent="claude", path=path)
+        elif not path.exists():
+            continue
+        elif fmt == "toml":
+            install_toml_hook(res, path, agent)
+        else:
+            install_hook(res, agent=agent, path=path)
     project = project or config.workspace()
     for label, p in mcp_stores(project):
         wrap_servers(p, res, label=label)
@@ -824,7 +924,11 @@ def fix(*, project: Path | None = None) -> Result:
 
 def uninstall(*, project: Path | None = None, purge: bool = False) -> Result:
     res = Result()
-    remove_hook(res)
+    for _agent, path, fmt in hook_targets(Path.home()):
+        if fmt == "toml":
+            remove_toml_hook(res, path)
+        else:
+            remove_hook(res, path)
     project = project or config.workspace()
     for label, p in mcp_stores(project):
         wrap_servers(p, res, unwrap=True, label=label)

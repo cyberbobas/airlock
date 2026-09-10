@@ -29,6 +29,7 @@ import os
 import sys
 
 from . import audit, config, contracts, notify, pins, policy as policy_mod, scan
+from .ai import judge as aijudge
 from .policy import ASK, BLOCK, OBSERVE, Decision, Policy
 
 EXIT_ALLOW, EXIT_BLOCK = 0, 2
@@ -83,8 +84,27 @@ def _record_outcome(payload: dict) -> int:
     return EXIT_ALLOW
 
 
+def _agent_from_argv() -> str:
+    """`airlock-hook --agent grok` — the agent this gate sits in front of, baked
+    into the hook command by `airlock init` so each of several agents behind one
+    gate is attributed to itself in the log and the monitor."""
+    argv = sys.argv[1:]
+    for i, a in enumerate(argv):
+        if a == "--agent" and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith("--agent="):
+            return a.split("=", 1)[1]
+    return ""
+
+
 def main() -> int:
     from . import config as _cfg; _cfg.force_utf8()
+    # A named gate stamps every record it writes with the agent, so `airlock
+    # monitor`/`log` can say WHOSE call this was. The env var is the fallback for
+    # a gate wired without the flag.
+    _ag = _agent_from_argv()
+    if _ag:
+        os.environ["AIRLOCK_AGENT"] = _ag
     raw = sys.stdin.read()
     try:
         payload = json.loads(raw) if raw.strip() else {}
@@ -160,7 +180,12 @@ def main() -> int:
     # The hook HAS an interactive channel (Claude Code's own prompt), so unlike
     # the proxy it does NOT apply ask_fallback: `ask` stays `ask`. The mode
     # decides how much the unmatched middle is worth interrupting for.
-    eff = policy.posture(d).action
+    d = policy.posture(d)
+    # inline AI judge — tighten-only, fail-safe, gray-zone by default. No-op in
+    # the `lite` tier or when no model is installed.
+    d = aijudge.consult(d, tool=tool, args=args, server=(server or ""),
+                        plane="hook", cfg=policy)
+    eff = d.action
 
     audit.record("decision", source="hook", tool=tool, decision=d.action,
                  effective=eff, reason=d.reason, args=args,

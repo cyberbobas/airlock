@@ -17,6 +17,16 @@
 profile: default
 mode: guard             # observe (learn) -> guard (block the dangerous) -> enforce (default-deny)
 default: ask
+# Turn a small, curated set of inert read-only commands (ls, pwd, whoami,
+# system-info reads, …) into `allow` so guard mode does not prompt on
+# every harmless call. Parsed exactly in code and applied only AFTER the block
+# sweep, so it can never expose a secret or a chained command. Set to false to
+# make even these ask.
+# LIMITATION: the check is textual — it refuses arguments that NAME a path outside
+# the workspace, but it cannot see through a symlink INSIDE the workspace that
+# points outside (e.g. `ls linkdir` where linkdir -> /etc). The allowlist reduces
+# prompts on inert commands; it is not a containment boundary.
+allow_benign_reads: true
 # What an `ask` becomes when no human can be reached.
 # NOTE: this applies in `enforce` only. Under `guard` an unreachable ask is
 # ALLOWED (and reported) by design — that is what makes guard different from
@@ -48,6 +58,27 @@ rules:
   - { tool: "*", match: "*drop database*",    action: block, reason: "destructive SQL" }
   - { tool: "*", match: "*git push --force*", action: block, reason: "force-push rewrites history" }
   - { tool: "*", match: "*git push -f *",     action: block, reason: "force-push rewrites history" }
+
+  # ---- absolute blocks: log / audit erasure (covering tracks) --------
+  # A security control must protect its own trail. Blocked deterministically
+  # because the ML judge reads "journalctl --vacuum" as routine maintenance and
+  # will not tighten it. Scoped to erase VERBS on log/audit targets, so
+  # read-only inspection (journalctl -u/--since/-xe, tail, less, grep) is
+  # untouched — those carry none of these tokens.
+  - { tool: "*", match: "*journalctl*--vacuum*",        action: block, reason: "erases the systemd journal" }
+  - { tool: "*", match: "*truncate*/var/log*",          action: block, reason: "truncates a system log" }
+  - { tool: "*", match: "*shred*/var/log*",             action: block, reason: "destroys a system log" }
+  - { tool: "*", match: "*wipe */var/log*",             action: block, reason: "destroys a system log" }
+  - { tool: "*", match: "*rm *-*f*/var/log*",           action: block, reason: "deletes a system log" }
+  - { tool: "*", match: "*:>*/var/log*",                action: block, reason: "empties a system log" }
+  - { tool: "*", match: "*: >*/var/log*",               action: block, reason: "empties a system log" }
+  - { tool: "*", match: "*/dev/null*/var/log*",         action: block, reason: "empties a system log via /dev/null" }
+  - { tool: "*", match: "*auditctl *-d*",               action: block, reason: "deletes audit rules" }
+  - { tool: "*", match: "*auditctl *-e *0*",            action: block, reason: "disables the audit subsystem" }
+  - { tool: "*", match: "*dmesg*-c*",                   action: block, reason: "clears the kernel ring buffer" }
+  - { tool: "*", match: "*systemctl*stop*journald*",    action: block, reason: "stops system logging" }
+  - { tool: "*", match: "*systemctl*mask*journald*",    action: block, reason: "disables system logging" }
+  - { tool: "*", match: "*systemctl*disable*journald*", action: block, reason: "disables system logging" }
 
   # ---- absolute blocks: secrets --------------------------------------
   # Both the directory and what is inside it. `*/.ssh/*` alone left the

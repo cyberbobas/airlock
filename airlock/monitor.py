@@ -59,6 +59,13 @@ class _Tail:
         self.live_offset = 0
         self._seen: set = set()
         self._seen_order: deque = deque()
+        # session-wide aggregates for the dashboard (whole history, not just the
+        # bounded recent feed)
+        self.blocked: Counter = Counter()    # block reason -> count
+        self.tools: Counter = Counter()      # tool/server -> count
+        self.times: deque = deque(maxlen=4000)   # arrival times, for the rate
+        self.agents: Counter = Counter()         # agent -> total decisions
+        self.agent_blocked: Counter = Counter()  # agent -> blocked count
 
     def _consider(self, rec: dict, counts: Counter, recent: deque) -> None:
         h = rec.get("h")
@@ -75,6 +82,14 @@ class _Tail:
         eff = rec.get("effective") or rec.get("decision") or "?"
         counts[eff] += 1
         recent.append(rec)
+        self.tools[rec.get("tool") or rec.get("server") or "-"] += 1
+        self.times.append(time.time())
+        agent = _agent_of(rec)
+        self.agents[agent] += 1
+        if eff in ("block", "hold"):
+            reason, _ = _clean_reason(rec.get("reason"))
+            self.blocked[reason or "blocked"] += 1
+            self.agent_blocked[agent] += 1
 
     def _read(self, f, counts: Counter, recent: deque) -> None:
         for line in f:
@@ -140,30 +155,169 @@ class _Tail:
 
 def _trunc(s: str, n: int) -> str:
     s = s or ""
+    if n <= 1:
+        return s[:max(n, 0)]
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
-def render(counts: Counter, recent: deque, path, *, width: int = 80) -> str:
+_TAG_RE = None
+
+
+def _clean_reason(reason: str):
+    """Drop the trailing `[ask:...]`/`[guard:...]` provenance tag for display,
+    and report whether a human resolved it (an `ask:` human channel)."""
+    global _TAG_RE
+    if _TAG_RE is None:
+        import re
+        _TAG_RE = re.compile(r"\s*\[([a-z]+):([a-z-]+)\]\s*$")
+    reason = reason or ""
+    human = False
+    m = _TAG_RE.search(reason)
+    if m:
+        if m.group(1) == "ask" and m.group(2) in ("socket", "osascript",
+                                                  "zenity", "tty", "remembered"):
+            human = True
+        reason = reason[: m.start()].rstrip()
+    return reason, human
+
+
+def _agent_of(rec: dict) -> str:
+    """Which agent a decision belongs to. `agent` (from $AIRLOCK_AGENT) is the
+    intended label; fall back to the session id, then the plane, so a gate that
+    was never told the agent name still groups calls sensibly."""
+    a = rec.get("agent") or rec.get("session") or rec.get("source") or "-"
+    return a or "-"
+
+
+def _bar(frac: float, cells: int) -> str:
+    frac = 0.0 if frac < 0 else (1.0 if frac > 1 else frac)
+    filled = int(round(frac * cells))
+    return "█" * filled + "░" * (cells - filled)
+
+
+def _rate(times: deque, window: float = 3.0) -> float:
+    """Decisions/second over the last `window`, measured from real arrival
+    spread. Returns 0 when a whole journal was just bulk-loaded (all arrivals
+    in one instant) so a static replay does not report an absurd rate."""
+    if len(times) < 2:
+        return 0.0
+    now = time.time()
+    recent = [t for t in times if t >= now - window]
+    if len(recent) < 2:
+        return 0.0
+    span = recent[-1] - recent[0]
+    if span < 0.2:                      # bulk-loaded, not a live stream
+        return 0.0
+    return (len(recent) - 1) / span
+
+
+def render(counts: Counter, recent: deque, tail, path, *, width: int = None,
+           feed: int = None, height: int = None) -> str:
+    if width is None or height is None:
+        import shutil
+        ts = shutil.get_terminal_size((100, 24))
+        width = width if width is not None else ts.columns
+        height = height if height is not None else ts.lines
+    W = max(width, 60)
+    C = _C
     total = sum(counts.values())
-    head = (f"  {_C['b']}AIRLOCK MONITOR{_C['0']}   {total} decisions   "
-            f"{time.strftime('%H:%M:%S')}")
-    tallies = []
-    for eff in ("allow", "ask", "block", "hold"):
-        if counts.get(eff):
-            tallies.append(f"{_tone(eff)}{eff} {counts[eff]}{_C['0']}")
-    bar = "   ".join(tallies) or f"{_C['d']}waiting for the first decision…{_C['0']}"
-    lines = [head, "  " + bar, ""]
-    for rec in list(recent)[-18:]:
+    allow = counts.get("allow", 0)
+    ask = counts.get("ask", 0)
+    block = counts.get("block", 0) + counts.get("hold", 0)
+    rate = _rate(getattr(tail, "times", deque()))
+    agents = getattr(tail, "agents", Counter())
+    ag_blocked = getattr(tail, "agent_blocked", Counter())
+    multi = len(agents) > 1                # more than one agent behind the gate
+
+    L = []
+    # ---- header -----------------------------------------------------------
+    ag_hint = f"   {C['d']}{len(agents)} agents{C['0']}" if multi else ""
+    L.append(f"  {C['b']}AIRLOCK MONITOR{C['0']}   {C['b']}{total}{C['0']} "
+             f"decisions   {C['d']}{rate:.0f}/s   {time.strftime('%H:%M:%S')}"
+             f"{C['0']}{ag_hint}")
+    L.append("")
+    # ---- distribution bars ------------------------------------------------
+    cells = max(min(W - 40, 44), 10)
+    for label, cnt in (("allow", allow), ("block", block), ("ask", ask)):
+        frac = (cnt / total) if total else 0.0
+        L.append(f"  {_tone(label)}{label:<6}{C['0']} {_tone(label)}"
+                 f"{_bar(frac, cells)}{C['0']}  {C['b']}{cnt}{C['0']} "
+                 f"{C['d']}({100 * frac:.0f}%){C['0']}")
+    L.append("")
+    # ---- who is being blocked (only when >1 agent is behind the gate) ------
+    if multi:
+        chips = []
+        for ag in sorted(agents, key=lambda a: (-agents[a], a))[:6]:
+            tot = agents[ag]
+            nb = ag_blocked.get(ag, 0)
+            col = _C["block"] if nb else _C["allow"]
+            chips.append(f"{C['b']}{ag}{C['0']} {col}✗{nb}{C['0']}"
+                         f"{C['d']}/{tot}{C['0']}")
+        L.append(f"  {C['b']}BY AGENT{C['0']}  " + "   ".join(chips))
+        L.append("")
+    # ---- two panels: TOP BLOCKED | BUSIEST TOOLS --------------------------
+    colw = max((W - 6) // 2, 20)
+    blocked = getattr(tail, "blocked", Counter()).most_common(6)
+    busiest = getattr(tail, "tools", Counter()).most_common(6)
+    L.append(f"  {C['b']}{'TOP BLOCKED':<{colw}}{C['0']}{C['b']}BUSIEST{C['0']}")
+    for i in range(6):
+        left = right = ""
+        if i < len(blocked):
+            rsn, n = blocked[i]
+            left = f"{_C['block']}{n:>5}{C['0']} {_trunc(rsn, colw - 8)}"
+            left_pad = colw - (len(f"{n:>5}") + 1 + len(_trunc(rsn, colw - 8)))
+            left = left + " " * max(left_pad, 0)
+        else:
+            left = " " * colw
+        if i < len(busiest):
+            tl, n = busiest[i]
+            right = f"{C['flag']}{n:>5}{C['0']} {C['d']}{_trunc(tl, colw - 8)}{C['0']}"
+        L.append("  " + left + right)
+    L.append("")
+    # ---- live feed: two lines per entry, the reason on its own full-width
+    #      line so it is never chopped, a faint rule between entries -----------
+    if feed is None:
+        overhead = 11 + (2 if multi else 0)
+        feed = max(((height or 24) - overhead) // 3, 4)   # 3 rows per entry
+    rows = list(recent)[-feed:]
+    aw = 8 if multi else 0                     # agent column, only if >1 agent
+    tw = 20                                    # tool column (fixed → no jitter)
+    rule = "  " + C['d'] + "─" * max(W - 4, 10) + C['0']
+
+    L.append(f"  {C['b']}LIVE{C['0']}  {C['d']}newest last   "
+             f"{C['0']}{C['allow']}✓ allowed{C['0']}   "
+             f"{C['block']}✗ blocked{C['0']}   {C['ask']}? asked{C['0']} "
+             f"{C['d']}(airlock flagged it; the agent decides){C['0']}")
+    L.append(rule)
+    for rec in rows:
         eff = rec.get("effective") or rec.get("decision") or "?"
-        mark = {"allow": "✓", "ask": "?", "block": "✗", "hold": "✗"}.get(eff, "·")
-        who = _trunc(rec.get("tool") or rec.get("server") or "-", 30)
-        res = _trunc(rec.get("resource") or rec.get("reason") or "", width - 44)
+        mark = {"allow": "✓", "ask": "?", "block": "✗", "hold": "⏸"}.get(eff, "·")
+        blocked = eff in ("block", "hold")
+        emph = C["b"] if blocked else ""
+        who = _trunc(rec.get("tool") or rec.get("server") or "-", tw)
+        reason, _human = _clean_reason(rec.get("reason"))
         ts = (rec.get("ts") or "")[11:19]
-        lines.append(f"  {_tone(eff)}{mark}{_C['0']} {_C['d']}{ts}{_C['0']} "
-                     f"{who:<30} {_C['d']}{res}{_C['0']}")
-    lines.append("")
-    lines.append(f"  {_C['d']}{path}   ·   Ctrl-C to exit{_C['0']}")
-    return "\n".join(lines) + "\n"
+        agent_col = ""
+        if aw:
+            agent_col = f"{C['flag']}{_trunc(_agent_of(rec), aw):<{aw}}{C['0']}  "
+        # line 1: mark  [agent]  tool   command (command flexes, only it truncs)
+        cmd_w = max(W - (2 + 1 + 2 + (aw + 2 if aw else 0) + tw + 3), 12)
+        cmd = _trunc(rec.get("resource") or reason or "", cmd_w)
+        L.append(f"  {emph}{_tone(eff)}{mark}{C['0']}  {agent_col}"
+                 f"{emph}{_tone(eff)}{who:<{tw}}{C['0']}   {cmd}")
+        # line 2: WHY. For a block this is the whole point, so it is in the block
+        # colour and labelled; an allow/ask reason stays quiet and dim.
+        if blocked:
+            why = _trunc("blocked: " + reason, max(W - 15, 20))
+            why_col = C["block"]
+        else:
+            why = _trunc(reason, max(W - 15, 20))
+            why_col = C["d"]
+        pad = max(W - 6 - len(why) - 8, 1)
+        L.append(f"      {why_col}{why}{C['0']}{' ' * pad}{C['d']}{ts}{C['0']}")
+        L.append(rule)
+    L.append(f"  {C['d']}{path}   ·   Ctrl-C to exit{C['0']}")
+    return "\n".join(L) + "\n"
 
 
 def run(*, n: int = 200, interval: float = 0.5, once: bool = False,
@@ -180,16 +334,59 @@ def run(*, n: int = 200, interval: float = 0.5, once: bool = False,
     tail = _Tail(p)
     tail.ingest(counts, recent)
     if once:
-        out.write(render(counts, recent, p))
+        # A one-shot snapshot is not bound by screen height — show the whole
+        # recent window rather than just what would fit a live frame.
+        out.write(render(counts, recent, tail, p, feed=max(len(recent), 12)))
         out.flush()
         return 0
+    # Draw on the ALTERNATE screen buffer, like htop/less/vim: a separate screen
+    # that never touches the scrollback. The old approach cleared with ESC[2J,
+    # which on VTE terminals (GNOME Terminal) pushes each cleared frame into the
+    # scrollback — so every redraw left a stacked copy you had to scroll through.
+    # `?1049h` enters the alt screen; each frame homes the cursor and clears to
+    # the end of the screen (so a shorter frame leaves no leftovers); `?1049l`
+    # on exit restores the terminal exactly as it was.
+    _ENTER, _LEAVE = "\033[?1049h\033[?25l", "\033[?25h\033[?1049l"
+    _HOME, _CLR_DOWN = "\033[H", "\033[0J"
+    # Put the terminal in cbreak + no-echo for the duration, like any fullscreen
+    # TUI. Without it, a mouse wheel (which the terminal turns into arrow-key
+    # bytes on the alternate screen) and any keystroke get echoed into the frame
+    # as stray characters. cbreak keeps signals on, so Ctrl-C still stops us.
+    fd = old = None
+    try:
+        import termios
+        import tty
+        if hasattr(sys.stdin, "fileno") and sys.stdin.isatty():
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            tty.setcbreak(fd)
+    except Exception:
+        fd = old = None
+    out.write(_ENTER)
+    out.flush()
     try:
         while True:
-            out.write(_CLEAR + render(counts, recent, p))
+            # Clear each line to its end (ESC[K) as we redraw, then clear the
+            # rest of the screen (ESC[0J). Without the per-line clear, a new
+            # frame's shorter line leaves the tail of the previous longer line
+            # behind — the ghosting that made commands read as "cat .envME.md".
+            frame = render(counts, recent, tail, p).replace("\n", "\033[K\n")
+            out.write(_HOME + frame + _CLR_DOWN)
             out.flush()
             time.sleep(interval)
             tail.ingest(counts, recent)
     except KeyboardInterrupt:
-        out.write("\n  monitor stopped.\n")
+        pass
+    finally:
+        out.write(_LEAVE)
         out.flush()
-        return 0
+        if fd is not None and old is not None:
+            try:
+                import termios
+                termios.tcflush(fd, termios.TCIFLUSH)   # drop buffered wheel/keys
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            except Exception:
+                pass
+    out.write("  monitor stopped.\n")
+    out.flush()
+    return 0

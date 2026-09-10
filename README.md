@@ -10,21 +10,38 @@ least-privilege policy. Static scanners check a skill once, before install.
 Airlock sits in the call path and decides **this call, right now**. That is
 where a skill that reads clean and behaves badly actually gets stopped.
 
+Deterministic rules block the unambiguous — secret paths, `rm -rf /`, exfil
+collectors, cloud-metadata SSRF, log erasure — with zero latency. For the **gray
+zone** an optional **built-in judge** (a small model we fine-tuned and ship as a
+single offline `llamafile`) tightens the call `ask → block` with a one-line
+reason. It only ever tightens, never loosens, and fails safe: if it is slow or
+unsure, the rules stand. Run several agents behind one gate and **`airlock
+monitor`** shows, live, which agent got blocked for what.
+
 Part of [Agentoffense](https://agentoffense.com/solutions/airlock_ai/).
 
-> **New in 0.5:** [`airlock breach`](#if-it-already-happened-airlock-breach) —
-> after an incident, reconstruct what the agent touched, whether it left the
-> machine, and exactly what to rotate, from the audit log you already have. See
-> the [CHANGELOG](CHANGELOG.md).
+> **New:** **AI in the Middle** — a local, offline judge model
+> ([`airlock ai-tier standard`](#the-built-in-judge--ai-in-the-middle)) that
+> decides the gray zone, tighten-only and fail-safe · a live
+> [`airlock monitor`](#watching-your-agents--airlock-monitor) dashboard with
+> **per-agent attribution** · and [`airlock
+> breach`](#if-it-already-happened-airlock-breach) for post-incident
+> reconstruction. See the [CHANGELOG](CHANGELOG.md).
 
-![Airlock blocks a poisoned skill stealing an SSH key](docs/airlock-demo.gif)
+![Airlock's judge blocks a gray-zone call and its scheduled review flags an attack](docs/airlock-ai-demo.gif)
+
+<sub>The built-in judge tightens a gray-zone `chmod -R 777` to **block**, the attacker toolkit is hard-blocked by the rules, and `airlock analyze` flags the window as suspicious — all local, all offline.</sub>
 
 ```
  agent ──native tools──▶ [PreToolUse hook] ─┐
-                                            ├─▶ policy ─▶ allow / ask / block
- agent ──MCP stdio──▶ [airlock-mcp] ──▶ server ─┘         │
-                                                          ▼
-                                          audit.jsonl (hash-chained, signable)
+                                            ├─▶ rules ─▶ allow / ask / block
+ agent ──MCP stdio──▶ [airlock-mcp] ──▶ server ─┘     │        │
+                                                      │   gray zone (ask)
+                                                      │        ▼
+                                                      │   [AI judge] ─ tighten ─▶ block
+                                                      ▼
+                                          audit.jsonl (hash-chained, signable,
+                                                       per-agent attribution)
 ```
 
 ## Install
@@ -207,6 +224,118 @@ metadata, known exfil collectors and download-and-execute are checked *before*
 grants, against every argument. `airlock allow` will tell you it refused rather
 than write a grant that quietly does nothing.
 
+## The built-in judge — "AI in the Middle"
+
+Deterministic rules settle the unambiguous. What is left is the **gray zone** —
+the calls a rule marks `ask`. Airlock ships an optional local model that decides
+that gray zone: it sees ONE call the rules could not settle and returns a
+one-line verdict with a human reason.
+
+```bash
+airlock ai-tier standard     # download/enable the built-in judge (one llamafile)
+airlock ai-status            # tier / model / backend
+```
+
+Three tiers: **lite** (rules only, no model), **standard** (the built-in judge,
+recommended), **pro** (bring your own local or cloud model — off by default,
+can be hard-locked off by policy). The model is a fine-tuned **Qwen2.5-3B**
+shipped as a single self-contained `llamafile` — **100% offline**, no install,
+no key, nothing leaves the machine.
+
+Two properties make it safe to put a model in the call path:
+
+* **Tighten-only.** The judge may turn `ask → block`. It may **not** turn a
+  should-block call into allow — an absolute block is decided by the rules
+  *before* the judge ever runs. So the worst a bad model can do is ask you about
+  something it could have allowed, never allow something it should have blocked.
+* **Fail-safe.** Slow, unreachable or off-task ⇒ the judge gives no opinion and
+  the rules stand (audited as `judge_noop`, never silent). It is
+  defense-in-depth, not the boundary.
+
+Live, on the shipped model: a gray-zone `chmod -R 777 /var/www` (rules: `ask`)
+comes back **`block` — "state-changing command needs review"**, while
+`npm install left-pad` is left alone. The judge is a `-seed` model trained on a
+bootstrap corpus; the tighten-only invariant is what makes that safe to ship.
+
+## allow / block / ask — and your agent's permission mode
+
+Every call ends as one of three, and the difference matters when you run more
+than one agent:
+
+* **block** — Airlock stops the call itself. Absolute blocks (secrets, exfil
+  collectors, `rm -rf /`, cloud metadata, curl-pipe-shell) fire **regardless of
+  what the agent is set to** — the agent never gets to run it.
+* **allow** — the call goes through.
+* **ask** — Airlock flags the call as one a human should approve. In the
+  **hook** path (an agent's native tools) Airlock hands that flag to the agent's
+  *own* permission prompt and records `ask`. So **whether you actually get asked
+  is the agent's decision, not Airlock's.** If the agent runs in an
+  auto-approve mode — grok's `permission_mode = "always-approve"`, Claude Code's
+  `bypassPermissions`, `--dangerously-skip-permissions`, etc. — it approves the
+  `ask` itself and you are never prompted. Claude Code in its default mode shows
+  *you* the prompt.
+
+The takeaway: **an auto-approving agent silences `ask`, but never an absolute
+block.** If you want Airlock to hard-stop the gray zone too (not defer it to the
+agent), raise the posture so an `ask` becomes a refusal when no human answers:
+
+```bash
+airlock profile paranoid           # ask on far more, refuse an unanswered ask
+# or keep default but fail an unattended ask closed:
+export AIRLOCK_UNATTENDED=block    # (or set `unattended: block` in the policy)
+```
+
+## Watching your agents — `airlock monitor`
+
+`airlock log` is the rear-view mirror; **`airlock monitor`** is the windscreen: a
+live, full-screen board that updates as decisions land. It shows the allow /
+block / ask split, the **top block reasons** and **busiest tools** for the
+session, and a live feed where every entry carries the command and, for a block,
+the reason in red (`blocked: known exfil collector`). It draws on the alternate
+screen (like `htop`), so it never litters your scrollback.
+
+**One gate, several agents — who did what.** When you run more than one agent
+behind Airlock, `airlock init` wires each one's hook stamped with its name
+(`airlock-hook --agent claude` / `--agent grok` / `--agent cursor`), so every
+decision is attributed to the agent that made it. The monitor then shows a
+**BY AGENT** line — `claude ✗2/40   grok ✗31/54   cursor ✗5/38` (blocked/total)
+— and an agent column per row, so at a glance you see *which* agent is reaching
+for the things that get blocked. (The label is self-reported via `$AIRLOCK_AGENT`
+and bound into the signed audit chain, so it cannot be rewritten after the fact.)
+
+## Scheduled review — `airlock analyze` / `airlock watch`
+
+The monitor is for watching live. For the times nobody is watching, **`airlock
+analyze`** reviews the audit log over a window and flags what looks like trouble:
+
+```bash
+airlock analyze --window day          # review the last 24h, print a report
+airlock analyze --window week --save  # ...and write it to ~/.airlock/reports/
+airlock watch --install daily         # run it automatically (also 6h/weekly/monthly)
+airlock watch --status                # show the schedule
+```
+
+Two layers, same fail-safe posture as the rest of Airlock:
+
+* **Deterministic signals** (always, no model): every block is classified —
+  secret read, exfiltration, reverse shell, log/audit erasure, cloud-metadata
+  SSRF, destructive, gate-tamper — plus per-agent block rates, a target hit
+  again and again (persistence), block bursts, rug-pull toolset holds, and
+  high-severity scan flags. The window is graded **clean / notable /
+  suspicious**, and `analyze` exits non-zero on *suspicious* so a cron or CI
+  wrapper can alert on it.
+* **An AI verdict on top** (standard/pro): the built-in micro-brain — or a
+  bring-your-own big model (Claude, etc.) — reads the same facts and writes an
+  analyst narrative pointing at the suspicious activity. If it is slow or absent
+  the deterministic report stands.
+
+`airlock watch --install` writes a single marked block into your user crontab
+(and removes exactly that block on `--uninstall`, never a line you wrote). On a
+box without cron, `airlock watch --every 6h` runs the same thing as a foreground
+loop. Every review is saved as Markdown under `~/.airlock/reports/` and recorded
+in the audit log, so you get a durable trail of "what did my agents do while I
+was away, and was any of it worth a look."
+
 ## What is actually covered
 
 Being precise about this matters more than the feature list, because a mixed
@@ -216,7 +345,9 @@ fleet is the normal case.
 |---|---|---|
 | **Any MCP server, any agent** (stdio) | ✅ | `airlock-mcp` proxy — vendor-neutral, this is the broad one |
 | Claude Code native tools | ✅ | PreToolUse hook decides; PostToolUse records what ran |
-| Cursor / Windsurf / Cline / Codex native tools | ❌ | their MCP servers are gated; their *built-in* file and shell tools are not |
+| grok native tools | ✅ | PreToolUse hook in its `config.toml` (Claude-compatible), stamped `--agent grok` |
+| Cursor native tools | ✅ | PreToolUse hook in `~/.cursor/hooks.json`, stamped `--agent cursor` |
+| Windsurf / Cline / Codex native tools | ❌ | their MCP servers are gated; their *built-in* file and shell tools are not (no PreToolUse hook) |
 | MCP over HTTP/SSE | ❌ | stdio only today |
 | A process opening its own socket | ❌ | needs an OS-level egress shim (plane ③) |
 | A shell command launching an MCP server directly | ⚠️ | blocked by a policy rule, not by the OS — see Limits |

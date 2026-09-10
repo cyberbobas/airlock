@@ -35,6 +35,7 @@ import sys
 import threading
 
 from . import audit, config, contracts, notify, pins, scan
+from .ai import judge as aijudge
 from .ask import resolve_ask
 from .policy import ASK, BLOCK, OBSERVE, Decision, Policy
 
@@ -225,6 +226,10 @@ class Proxy:
                              -1)   # rule=-1: an explicit grant, not the default
             d = d.combine(other)
         d = self.policy.posture(d)
+        # (4) inline AI judge — tighten-only, fail-safe, gray-zone by default.
+        #     A no-op in the `lite` tier or when no model is installed.
+        d = aijudge.consult(d, tool=qualified, args=args, server=self.server_id,
+                            plane="mcp", cfg=self.policy)
 
         effective, via = self._resolve(d, name, args, arg_flags, resource)
         audit.record("decision", source="mcp", server=self.server_id,
