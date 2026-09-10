@@ -301,6 +301,39 @@ decision is attributed to the agent that made it. The monitor then shows a
 for the things that get blocked. (The label is self-reported via `$AIRLOCK_AGENT`
 and bound into the signed audit chain, so it cannot be rewritten after the fact.)
 
+## Scheduled review — `airlock analyze` / `airlock watch`
+
+The monitor is for watching live. For the times nobody is watching, **`airlock
+analyze`** reviews the audit log over a window and flags what looks like trouble:
+
+```bash
+airlock analyze --window day          # review the last 24h, print a report
+airlock analyze --window week --save  # ...and write it to ~/.airlock/reports/
+airlock watch --install daily         # run it automatically (also 6h/weekly/monthly)
+airlock watch --status                # show the schedule
+```
+
+Two layers, same fail-safe posture as the rest of Airlock:
+
+* **Deterministic signals** (always, no model): every block is classified —
+  secret read, exfiltration, reverse shell, log/audit erasure, cloud-metadata
+  SSRF, destructive, gate-tamper — plus per-agent block rates, a target hit
+  again and again (persistence), block bursts, rug-pull toolset holds, and
+  high-severity scan flags. The window is graded **clean / notable /
+  suspicious**, and `analyze` exits non-zero on *suspicious* so a cron or CI
+  wrapper can alert on it.
+* **An AI verdict on top** (standard/pro): the built-in micro-brain — or a
+  bring-your-own big model (Claude, etc.) — reads the same facts and writes an
+  analyst narrative pointing at the suspicious activity. If it is slow or absent
+  the deterministic report stands.
+
+`airlock watch --install` writes a single marked block into your user crontab
+(and removes exactly that block on `--uninstall`, never a line you wrote). On a
+box without cron, `airlock watch --every 6h` runs the same thing as a foreground
+loop. Every review is saved as Markdown under `~/.airlock/reports/` and recorded
+in the audit log, so you get a durable trail of "what did my agents do while I
+was away, and was any of it worth a look."
+
 ## What is actually covered
 
 Being precise about this matters more than the feature list, because a mixed
