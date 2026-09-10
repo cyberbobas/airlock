@@ -10,21 +10,36 @@ least-privilege policy. Static scanners check a skill once, before install.
 Airlock sits in the call path and decides **this call, right now**. That is
 where a skill that reads clean and behaves badly actually gets stopped.
 
+Deterministic rules block the unambiguous — secret paths, `rm -rf /`, exfil
+collectors, cloud-metadata SSRF, log erasure — with zero latency. For the **gray
+zone** an optional **built-in judge** (a small model we fine-tuned and ship as a
+single offline `llamafile`) tightens the call `ask → block` with a one-line
+reason. It only ever tightens, never loosens, and fails safe: if it is slow or
+unsure, the rules stand. Run several agents behind one gate and **`airlock
+monitor`** shows, live, which agent got blocked for what.
+
 Part of [Agentoffense](https://agentoffense.com/solutions/airlock_ai/).
 
-> **New in 0.5:** [`airlock breach`](#if-it-already-happened-airlock-breach) —
-> after an incident, reconstruct what the agent touched, whether it left the
-> machine, and exactly what to rotate, from the audit log you already have. See
-> the [CHANGELOG](CHANGELOG.md).
+> **New:** **AI in the Middle** — a local, offline judge model
+> ([`airlock ai-tier standard`](#the-built-in-judge--ai-in-the-middle)) that
+> decides the gray zone, tighten-only and fail-safe · a live
+> [`airlock monitor`](#watching-your-agents--airlock-monitor) dashboard with
+> **per-agent attribution** · and [`airlock
+> breach`](#if-it-already-happened-airlock-breach) for post-incident
+> reconstruction. See the [CHANGELOG](CHANGELOG.md).
 
 ![Airlock blocks a poisoned skill stealing an SSH key](docs/airlock-demo.gif)
 
 ```
  agent ──native tools──▶ [PreToolUse hook] ─┐
-                                            ├─▶ policy ─▶ allow / ask / block
- agent ──MCP stdio──▶ [airlock-mcp] ──▶ server ─┘         │
-                                                          ▼
-                                          audit.jsonl (hash-chained, signable)
+                                            ├─▶ rules ─▶ allow / ask / block
+ agent ──MCP stdio──▶ [airlock-mcp] ──▶ server ─┘     │        │
+                                                      │   gray zone (ask)
+                                                      │        ▼
+                                                      │   [AI judge] ─ tighten ─▶ block
+                                                      ▼
+                                          audit.jsonl (hash-chained, signable,
+                                                       per-agent attribution)
 ```
 
 ## Install
@@ -206,6 +221,39 @@ a single "N more blocked — `airlock report`" summary instead of a wall of toas
 metadata, known exfil collectors and download-and-execute are checked *before*
 grants, against every argument. `airlock allow` will tell you it refused rather
 than write a grant that quietly does nothing.
+
+## The built-in judge — "AI in the Middle"
+
+Deterministic rules settle the unambiguous. What is left is the **gray zone** —
+the calls a rule marks `ask`. Airlock ships an optional local model that decides
+that gray zone: it sees ONE call the rules could not settle and returns a
+one-line verdict with a human reason.
+
+```bash
+airlock ai-tier standard     # download/enable the built-in judge (one llamafile)
+airlock ai-status            # tier / model / backend
+```
+
+Three tiers: **lite** (rules only, no model), **standard** (the built-in judge,
+recommended), **pro** (bring your own local or cloud model — off by default,
+can be hard-locked off by policy). The model is a fine-tuned **Qwen2.5-3B**
+shipped as a single self-contained `llamafile` — **100% offline**, no install,
+no key, nothing leaves the machine.
+
+Two properties make it safe to put a model in the call path:
+
+* **Tighten-only.** The judge may turn `ask → block`. It may **not** turn a
+  should-block call into allow — an absolute block is decided by the rules
+  *before* the judge ever runs. So the worst a bad model can do is ask you about
+  something it could have allowed, never allow something it should have blocked.
+* **Fail-safe.** Slow, unreachable or off-task ⇒ the judge gives no opinion and
+  the rules stand (audited as `judge_noop`, never silent). It is
+  defense-in-depth, not the boundary.
+
+Live, on the shipped model: a gray-zone `chmod -R 777 /var/www` (rules: `ask`)
+comes back **`block` — "state-changing command needs review"**, while
+`npm install left-pad` is left alone. The judge is a `-seed` model trained on a
+bootstrap corpus; the tighten-only invariant is what makes that safe to ship.
 
 ## allow / block / ask — and your agent's permission mode
 
