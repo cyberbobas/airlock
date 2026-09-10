@@ -28,7 +28,9 @@ Part of [Agentoffense](https://agentoffense.com/solutions/airlock_ai/).
 > breach`](#if-it-already-happened-airlock-breach) for post-incident
 > reconstruction. See the [CHANGELOG](CHANGELOG.md).
 
-![Airlock blocks a poisoned skill stealing an SSH key](docs/airlock-demo.gif)
+![Airlock's judge blocks a gray-zone call and its scheduled review flags an attack](docs/airlock-ai-demo.gif)
+
+<sub>The built-in judge tightens a gray-zone `chmod -R 777` to **block**, the attacker toolkit is hard-blocked by the rules, and `airlock analyze` flags the window as suspicious — all local, all offline.</sub>
 
 ```
  agent ──native tools──▶ [PreToolUse hook] ─┐
