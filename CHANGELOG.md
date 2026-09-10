@@ -5,11 +5,64 @@ All notable changes to Airlock. Dates are UTC. The product and CLI are
 
 ## [Unreleased]
 
-Start of the AI layer ("AI in the Middle") — see `docs/AI-SPEC.md`. Three tiers
-(lite / standard / pro); the AI is optional, only ever tightens a decision, and
-fails closed when unavailable, so the fail-closed core invariant is preserved.
+## [0.6.0] — 2026-09-10
+
+**AI in the Middle ships.** The optional AI layer is now backed by a trained,
+shipped judge model, a live monitor, per-agent attribution, and scheduled audit
+review. The AI only ever tightens a decision and fails closed when unavailable,
+so the fail-closed core invariant is preserved.
+
+### Added (this release)
+- **Shipped judge model** `airlock-judge-v3-seed.llamafile` (Qwen2.5-3B, Q4_K_M,
+  one offline llamafile) — a GitHub release asset. Ship gate PASSED: false-allow
+  on must-block 0/51, agreement 96.2%, reproduced 3×. Labelled `-seed` (bootstrap
+  corpus). Install with `airlock ai-model --path` / `--url`.
+- **`airlock analyze`** — a security review of the audit log over a window
+  (`--window 6h|day|week|month`). Deterministic suspicion signals (blocks
+  classified into secret-read / exfiltration / reverse-shell / log-erasure /
+  cloud-metadata-SSRF / destructive / gate-tamper, per-agent block rates,
+  repeated-target persistence, block bursts, rug-pull holds, high scan flags),
+  plus an optional AI analyst verdict (micro-brain or BYO big model via
+  `backend.investigate()`). Graded clean/notable/suspicious; exits 2 on
+  suspicious. Reports saved 0600 under `~/.airlock/reports/`. New module
+  `airlock/analyst.py`.
+- **`airlock watch`** — schedule `airlock analyze` (`--install 6h|daily|weekly|
+  monthly`) via a marked block in the user crontab (owns only its own lines);
+  `--every` runs a foreground loop for boxes without cron. New module
+  `airlock/schedule.py`.
+- **`airlock monitor` is now a live dashboard** — allow/block/ask bars, top block
+  reasons, busiest tools, decisions/sec, and a feed with the block reason in red.
+  Draws on the alternate screen (like htop); cbreak/no-echo so the mouse wheel
+  cannot inject characters.
+- **Per-agent attribution** — every decision carries an `agent` field bound into
+  the signed hash chain. `airlock-hook --agent <name>`; `airlock init` wires a
+  named hook into each agent on the box (Claude Code → settings.json, grok →
+  config.toml, Cursor → hooks.json). The monitor shows a **BY AGENT** panel.
+
+### Fixed
+- **Summary fail-safe** — `summarize()` rejects off-task model output (a verdict
+  or judge-prompt echo) and degrades to the structured recap; the leak never
+  prints, for any model.
+- **Judge CPU budget** 800 → 3000 ms, with a `judge_noop` audit line. The 3B/Q4
+  judge is ~1.1 s on CPU; at 800 ms it timed out every call and did nothing,
+  silently.
+- **Judge verdict cache** — in-process, keyed on the redacted context + policy
+  digest + model, TTL-bounded, never persisted. Repeat gray-zone verdict ~1.1 s → 0.
+- **Log/audit-erasure block rule** in the default profile (`journalctl --vacuum`,
+  `truncate`/`shred`/`rm` on `/var/log`, `auditctl -D`, `dmesg --clear`, …).
+- **Benign read-only allowlist** (`policy.py`) — inert coreutils → allow instead
+  of asking, after the absolute block sweep. Hardened across six adversarial
+  rounds; `git` removed after finding repo-config-driven RCE via `core.fsmonitor`
+  / `diff.external`. It reduces prompts; it is not a containment boundary.
+- **`builtin.py`** — drop `--nobrowser` so the built-in judge runs on
+  llamafile ≥ 0.10 (which hard-errors on the removed flag).
 
 ### Added
+Start of the AI layer ("AI in the Middle") — see `docs/AI-SPEC.md`. Three tiers
+(lite / standard / pro); the AI is optional, only ever tightens a decision, and
+fails closed when unavailable.
+
+
 - **`airlock summary`** — a plain-language recap of a session from the audit log:
   decisions, what was blocked/asked, scan flags, top tools and targets. Works
   with no model at all (structured, non-LLM output = the `lite` tier); a
@@ -90,7 +143,7 @@ fails closed when unavailable, so the fail-closed core invariant is preserved.
   endpoint, dataset harvesting, and the inline judge (tighten-only, hard-block
   untouched, gray-zone default, opt-in relax, fail-safe). An end-to-end proxy run
   confirms the judge tightens allow→block in `standard` and is a no-op in `lite`.
-  Full suite 20/20.
+  Full suite 23/23 (adds test_allowlist, test_summary_failsafe, test_analyst).
 
 ## [0.5.3] — 2026-08-29
 
